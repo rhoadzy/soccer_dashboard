@@ -1,9 +1,9 @@
 # app.py
 import os
 import re
-from typing import Optional, Tuple, Dict
+from typing import Optional, Dict
 
-# --- Make HTTPS robust on Windows/local: point requests to a known CA bundle ---
+# --- Make HTTPS robust on Windows/local: use certifi CA bundle ---
 try:
     import certifi
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -30,7 +30,7 @@ except Exception:
 # ---------------------------------------------------------------------
 st.set_page_config(page_title="HS Soccer Dashboard", layout="wide")
 
-# Load local .env first (for local dev)
+# Load local .env (for local dev)
 load_dotenv()
 
 # Streamlit Secrets fallback (for Cloud)
@@ -58,7 +58,7 @@ def _inject_css():
           }
           a.tiny-open:hover { background:#e6e9ef; }
 
-          /* ----- Mobile card list styles ----- */
+          /* ----- Game cards (existing) ----- */
           .game-card {
             border:1px solid #e6e9ef;
             border-radius:12px;
@@ -67,23 +67,37 @@ def _inject_css():
             background:#ffffff;
             box-shadow:0 1px 2px rgba(0,0,0,0.04);
           }
-          .gc-row {
-            display:flex; align-items:center; justify-content:space-between; gap:12px;
-          }
+          .gc-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
           .gc-date { font-size:0.92rem; color:#6b7280; }
           .gc-opp  { font-weight:600; font-size:1.05rem; }
           .gc-score{ font-weight:700; font-size:1.15rem; white-space:nowrap; }
           .gc-meta { margin-top:6px; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
-          .pill {
-            padding:2px 8px; border-radius:999px; background:#f0f2f6; font-size:12px;
+          .pill { padding:2px 8px; border-radius:999px; background:#f0f2f6; font-size:12px; }
+          .pill.home { background:#e8f5e9; }
+          .pill.away { background:#e3f2fd; }
+          .pill.div  { background:#fff7ed; }
+
+          /* ----- KPI cards (NEW) ----- */
+          .kpi-grid {
+            display:grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap:12px;
+            margin:6px 0 18px;
           }
-          .pill.home { background:#e8f5e9; }  /* light green */
-          .pill.away { background:#e3f2fd; }  /* light blue  */
-          .pill.div  { background:#fff7ed; }  /* light orange*/
+          .stat-card {
+            border:1px solid #e6e9ef;
+            border-radius:12px;
+            background:#fff;
+            padding:12px 14px;
+            box-shadow:0 1px 2px rgba(0,0,0,.04);
+          }
+          .stat-label { font-size:.85rem; color:#6b7280; margin-bottom:4px; }
+          .stat-value { font-size:1.6rem; font-weight:700; line-height:1.1; }
 
           @media (max-width: 480px) {
             .block-container { padding-top: 0.75rem; padding-left: 0.6rem; padding-right: 0.6rem; }
             a.tiny-open { padding:6px 10px; font-size:14px; }
+            .stat-value { font-size:1.8rem; }
           }
         </style>
         """,
@@ -175,6 +189,20 @@ def _row_as_clean_dict(row: pd.Series) -> Dict[str, str]:
         out[str(k)] = str(v)
     return out
 
+def _minute_bucket(x) -> str:
+    """Return a simple 15-min bucket label."""
+    try:
+        m = float(x)
+    except Exception:
+        return "N/A"
+    if m < 0: return "N/A"
+    if m <= 15: return "0-15"
+    if m <= 30: return "16-30"
+    if m <= 45: return "31-45"
+    if m <= 60: return "46-60"
+    if m <= 75: return "61-75"
+    return "76-90+"
+
 # ---------------------------------------------------------------------
 # LOADERS
 # ---------------------------------------------------------------------
@@ -205,11 +233,14 @@ def load_players() -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_events() -> pd.DataFrame:
     df = read_sheet_to_df(SPREADSHEET_KEY, "events")
-    if "assist" in df and "assists" not in df: df = df.rename(columns={"assist":"assists"})
+    df.columns = [c.strip().lower() for c in df.columns]
+    if "assist" in df.columns and "assists" not in df.columns:
+        df = df.rename(columns={"assist":"assists"})
     for k in ["event_id","match_id","player_id"]:
-        if k in df: df[k] = df[k].astype(str)
+        if k in df.columns: df[k] = df[k].astype(str)
     for n in ["goals","assists","shots","fouls"]:
-        if n in df: df[n] = pd.to_numeric(df[n], errors="coerce").fillna(0).astype(int)
+        if n not in df.columns: df[n] = 0
+        df[n] = pd.to_numeric(df[n], errors="coerce").fillna(0).astype(int)
     return df
 
 @st.cache_data(ttl=300)
@@ -235,7 +266,6 @@ def load_plays_simple() -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def load_summaries() -> pd.DataFrame:
-    """Structured coach notes per match from 'summary' tab."""
     try:
         df = read_sheet_to_df(SPREADSHEET_KEY, "summary")
         df.columns = [str(c).strip().lower() for c in df.columns]
@@ -244,6 +274,48 @@ def load_summaries() -> pd.DataFrame:
         return df
     except Exception:
         return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def load_goals_allowed() -> pd.DataFrame:
+    """
+    Read 'goals_allowed' tab.
+    Expected columns (case-insensitive, flexible):
+      - match_id (str)
+      - goal_id (str)  [optional]
+      - description or description_of_goal (str)  [optional]
+      - goalie_player_id / goalkeeper_player_id / goalie (player_id as str)
+      - minute (int) [optional]
+      - situation (str) [optional: Open Play, Set Piece, CK, FK, PK, etc.]
+    """
+    try:
+        df = read_sheet_to_df(SPREADSHEET_KEY, "goals_allowed")
+    except Exception:
+        return pd.DataFrame()
+
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    if "description_of_goal" in df.columns and "description" not in df.columns:
+        df = df.rename(columns={"description_of_goal": "description"})
+    for cand in ["goalie_player_id","goalkeeper_player_id","goalie"]:
+        if cand in df.columns:
+            df = df.rename(columns={cand: "goalie_player_id"})
+            break
+    if "goalie_player_id" not in df.columns:
+        df["goalie_player_id"] = ""
+
+    for k in ["match_id","goal_id","goalie_player_id"]:
+        if k in df.columns:
+            df[k] = df[k].astype(str)
+    if "minute" in df.columns:
+        df["minute"] = pd.to_numeric(df["minute"], errors="coerce")
+    else:
+        df["minute"] = pd.NA
+    if "situation" not in df.columns:
+        df["situation"] = ""
+    if "description" not in df.columns:
+        df["description"] = ""
+
+    return df
 
 # ---------------------------------------------------------------------
 # SI RANKINGS HELPERS (for D2 Rank KPI)
@@ -291,44 +363,31 @@ def fuzzy_find_rank(ranks: Dict[str,int], target: str) -> Optional[int]:
 # ---------------------------------------------------------------------
 # AGGREGATIONS / STATS
 # ---------------------------------------------------------------------
-def season_points(events: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
-    if events.empty or players.empty:
-        return pd.DataFrame(columns=["jersey","name","goals","assists","points"])
-    agg = events.groupby("player_id", as_index=False)[["goals","assists"]].sum()
-    players_idx = players.set_index("player_id")[["name","jersey"]].copy()
-    players_idx.index = players_idx.index.astype(str)
-    df = agg.set_index("player_id").join(players_idx, how="left").fillna({"jersey":0,"name":"Unknown"})
-    df["points"] = 2*df["goals"] + df["assists"]
-    out = df.reset_index()[["jersey","name","goals","assists","points"]]
-    return out.sort_values(["points","goals","assists","jersey"], ascending=[False,False,False,True])
-
-def per_player_for_match(events: pd.DataFrame, players: pd.DataFrame, match_id: str) -> pd.DataFrame:
-    ev = events.query("match_id == @match_id").copy()
-    if ev.empty:
-        base = players[["player_id","name","jersey","position"]].copy()
-        base["shots"]=base["goals"]=base["assists"]=base["points"]=0
-        return base[["jersey","name","position","shots","goals","assists","points"]]
-    sums = ev.groupby("player_id", as_index=False)[["shots","goals","assists"]].sum()
-    sums["points"] = 2*sums["goals"] + sums["assists"]
-    joined = sums.set_index("player_id").join(
-        players.set_index("player_id")[["name","jersey","position"]], how="left"
-    ).fillna({"name":"Unknown","position":"","jersey":0})
-    out = joined.reset_index()[["jersey","name","position","shots","goals","assists","points"]]
-    return out.sort_values(["points","goals","shots"], ascending=[False,False,False])
-
 def set_piece_leaderboard_from_plays(plays_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Summarize set-piece attempts by play_call_id, set_piece type, and play_type.
+    Expects columns:
+      - match_id (str)
+      - set_piece (e.g., 'fk_direct', 'fk_indirect', 'corner', 'throw', ...)
+      - play_call_id (str)  <-- used as the grouping key/name of the call
+      - play_type (free text, optional)
+      - goal_created (bool) <-- True if the play directly created a goal
+    """
     if plays_df.empty or "play_call_id" not in plays_df.columns:
-        return pd.DataFrame(columns=["set_piece","Play Call","play_type","attempts","Goal%"])
-    grp = (plays_df.groupby(["play_call_id","set_piece","play_type"], dropna=False)
-           .agg(attempts=("play_call_id","count"), goal_rate=("goal_created","mean"))
-           .reset_index())
-    grp["Goal%"] = (grp["goal_rate"]*100).round(1)
-    out = grp.rename(columns={"play_call_id":"Play Call"})
-    return out[["set_piece","Play Call","play_type","attempts","Goal%"]].sort_values(
-        ["Goal%","attempts","Play Call"], ascending=[False,False,True]
+        return pd.DataFrame(columns=["set_piece", "Play Call", "play_type", "attempts", "Goal%"])
+
+    grp = (
+        plays_df.groupby(["play_call_id", "set_piece", "play_type"], dropna=False)
+        .agg(attempts=("play_call_id", "count"), goal_rate=("goal_created", "mean"))
+        .reset_index()
+    )
+    grp["Goal%"] = (grp["goal_rate"] * 100).round(1)
+
+    out = grp.rename(columns={"play_call_id": "Play Call"})
+    return out[["set_piece", "Play Call", "play_type", "attempts", "Goal%"]].sort_values(
+        ["Goal%", "attempts", "Play Call"], ascending=[False, False, True]
     )
 
-# Rolling-3 trends using conversion rates
 def build_trend_frame(matches: pd.DataFrame) -> pd.DataFrame:
     if matches.empty:
         return pd.DataFrame()
@@ -340,29 +399,24 @@ def build_trend_frame(matches: pd.DataFrame) -> pd.DataFrame:
     shf = df.get("shots_for", pd.Series([0]*len(df)))
     sha = df.get("shots_against", pd.Series([0]*len(df)))
 
-    # Save%
     denom_sv = sv + df["GA"]
     df["Save%"] = (sv / denom_sv * 100).where(denom_sv > 0, 0.0)
-
-    # Shot conversion rates per match
     df["GF Conv%"] = (df["GF"] / shf * 100).where(shf > 0, 0.0)
     df["GA Conv%"] = (df["GA"] / sha * 100).where(sha > 0, 0.0)
 
-    # Rolling means (window=3)
     roll = df[["GF", "GA", "Save%", "GF Conv%", "GA Conv%"]].rolling(3, min_periods=1).mean()
     for c in roll.columns:
         df[f"R3 {c}"] = roll[c]
     df["Date"] = df["date"]
     return df
 
-# --- AI summary helper (Gemini) ---
+# --- AI: match summary ---
 def generate_ai_game_summary(match_row: pd.Series,
                              notes_row: Optional[pd.Series],
                              events: pd.DataFrame) -> Optional[str]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or genai is None:
         return None
-
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-1.5-flash")
@@ -411,11 +465,65 @@ def generate_ai_game_summary(match_row: pd.Series,
     except Exception:
         return None
 
+# --- AI: conceded goals summary ---
+def generate_ai_conceded_summary(ga_df: pd.DataFrame,
+                                 matches: pd.DataFrame,
+                                 players: pd.DataFrame) -> Optional[str]:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or genai is None:
+        return None
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        pl = players.set_index("player_id") if "player_id" in players.columns else pd.DataFrame()
+        mx = matches.set_index("match_id") if "match_id" in matches.columns else pd.DataFrame()
+
+        tmp = ga_df.copy()
+        if not pl.empty and "goalie_player_id" in tmp.columns:
+            tmp["goalie_name"] = tmp["goalie_player_id"].map(
+                lambda pid: pl.at[str(pid), "name"] if str(pid) in pl.index else ""
+            )
+        else:
+            tmp["goalie_name"] = ""
+
+        if not mx.empty and "match_id" in tmp.columns:
+            tmp["opponent"] = tmp["match_id"].map(lambda mid: mx.at[str(mid), "opponent"] if str(mid) in mx.index else "")
+            tmp["date"] = tmp["match_id"].map(lambda mid: mx.at[str(mid), "date"] if str(mid) in mx.index else "")
+        else:
+            tmp["opponent"] = ""
+            tmp["date"] = ""
+
+        tmp["minute_bucket"] = tmp["minute"].apply(_minute_bucket)
+        by_situation = tmp["situation"].fillna("").str.title().replace({"": "Unspecified"}).value_counts().to_dict()
+        by_bucket = tmp["minute_bucket"].value_counts().to_dict()
+        by_goalie = tmp["goalie_name"].fillna("").replace({"": "Unspecified"}).value_counts().to_dict()
+
+        context = {
+            "total_goals_allowed": int(len(ga_df)),
+            "by_situation": by_situation,
+            "by_minute_bucket": by_bucket,
+            "by_goalie": by_goalie,
+        }
+
+        prompt = (
+            "You are a soccer defensive analyst. Review the conceded goals profile and give a brief, "
+            "coach-friendly summary (120-160 words max) with 3-5 concrete actions. "
+            "Focus on patterns (set pieces, late goals, specific minute windows, keeper load) and training priorities. "
+            "Avoid jargon. Keep it practical.\n\n"
+            f"DATA: {context}"
+        )
+
+        resp = model.generate_content(prompt)
+        return getattr(resp, "text", "").strip() or None
+    except Exception:
+        return None
+
 # ---------------------------------------------------------------------
-# UI RENDERERS (with compact/mobile variants)
+# UI RENDERERS
 # ---------------------------------------------------------------------
 def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact: bool=False):
-    # aggregates
+    # --- aggregate
     gf = int(matches_view.get("goals_for", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
     ga = int(matches_view.get("goals_against", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
     sh_for = int(matches_view.get("shots_for", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
@@ -423,37 +531,48 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
     sv = int(matches_view.get("saves", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
     games = int(len(matches_view))
 
-    # Save% as saves / (saves + GA)
     save_denom = sv + ga
     save_pct = (sv / save_denom * 100.0) if save_denom > 0 else 0.0
-
-    # Shot conversion rates
     conv_for_pct = (gf / sh_for * 100.0) if sh_for > 0 else 0.0
     conv_agn_pct = (ga / sh_ag  * 100.0) if sh_ag  > 0 else 0.0
-
     record_str = _team_record_text(matches_view)
 
     if compact:
-        cols = st.columns(5)
-        cols[0].metric("Games", games)
-        cols[1].metric("GF", gf)
-        cols[2].metric("GA", ga)
-        cols[3].metric("Record", record_str)
+        # ---------- Mobile / Compact: card grid ----------
+        items = [
+            ("Games", games),
+            ("Record", record_str),
+            ("GF", gf),
+            ("GA", ga),
+            ("Shots (For)", sh_for),
+            ("Saves", sv),
+            ("Save%", f"{save_pct:.1f}%"),
+            ("Conv% (For)", f"{conv_for_pct:.1f}%"),
+            ("Conv% (Agst)", f"{conv_agn_pct:.1f}%"),
+        ]
         if d2_rank:
-            cols[4].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
-    else:
-        cols = st.columns(10)
-        cols[0].metric("Games", games)
-        cols[1].metric("GF", gf)
-        cols[2].metric("GA", ga)
-        cols[3].metric("Shots (For)", sh_for)
-        cols[4].metric("Saves", sv)
-        cols[5].metric("Save%", f"{save_pct:.1f}%")
-        cols[6].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
-        cols[7].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
-        cols[8].metric("Record", record_str)
-        if d2_rank:
-            cols[9].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
+            items.append(("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}"))
+
+        html = "<div class='kpi-grid'>" + "".join(
+            f"<div class='stat-card'><div class='stat-label'>{label}</div><div class='stat-value'>{value}</div></div>"
+            for label, value in items
+        ) + "</div>"
+        st.markdown(html, unsafe_allow_html=True)
+        return
+
+    # ---------- Desktop: keep classic metrics row ----------
+    cols = st.columns(10)
+    cols[0].metric("Games", games)
+    cols[1].metric("GF", gf)
+    cols[2].metric("GA", ga)
+    cols[3].metric("Shots (For)", sh_for)
+    cols[4].metric("Saves", sv)
+    cols[5].metric("Save%", f"{save_pct:.1f}%")
+    cols[6].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
+    cols[7].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
+    cols[8].metric("Record", record_str)
+    if d2_rank:
+        cols[9].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
 
 def render_games_table(matches: pd.DataFrame, compact: bool=False):
     st.subheader("Games")
@@ -495,14 +614,13 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
               </div>
               <div class="gc-meta">
                 {ha_html}{div_html}
-                <a class="tiny-open" href="?match_id={mid}" title="Open game">↗ Open</a>
+                <a class="tiny-open" href='?match_id={mid}' title='Open game'>↗ Open</a>
               </div>
             </div>
             """
             st.markdown(card, unsafe_allow_html=True)
         return
 
-    # Desktop table
     hdr = st.columns((0.3, 1.2, 2, 2.4, 0.9, 1.2, 1.0, 1.0, 0.9, 0.7))
     for c,t in zip(hdr, ["", "Date", "Match ID", "Opponent", "H/A", "Division", "GF-GA", "Shots", "Saves", ""]):
         c.markdown(f"**{t}**" if t else "")
@@ -532,23 +650,26 @@ def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n
     if "assist" in ev.columns and "assists" not in ev.columns:
         ev = ev.rename(columns={"assist": "assists"})
     for n in ["goals","assists","shots","fouls"]:
-        if n in ev.columns: ev[n] = pd.to_numeric(ev[n], errors="coerce").fillna(0).astype(int)
+        if n not in ev.columns: ev[n] = 0
+        ev[n] = pd.to_numeric(ev[n], errors="coerce").fillna(0).astype(int)
     if "player_id" in ev.columns: ev["player_id"] = ev["player_id"].astype(str)
     if "player_id" in pl.columns: pl["player_id"] = pl["player_id"].astype(str)
 
-    agg = ev.groupby("player_id", as_index=False)[["goals","assists"]].sum()
+    num_cols = [c for c in ["goals","assists","shots","fouls"] if c in ev.columns]
+    agg = ev.groupby("player_id", as_index=False)[num_cols].sum()
     pidx = pl.set_index("player_id")[["name","jersey"]].copy()
     pidx.index = pidx.index.astype(str)
     df = agg.set_index("player_id").join(pidx, how="left").fillna({"jersey":0,"name":"Unknown"})
-    df["points"] = 2*df["goals"] + df["assists"]
-    full = df.reset_index()[["jersey","name","goals","assists","points"]] \
+    df["points"] = 2*df.get("goals", 0) + df.get("assists", 0)
+
+    cols_full = ["jersey","name"] + num_cols + ["points"]
+    full = df.reset_index()[cols_full] \
              .sort_values(["points","goals","assists","jersey"], ascending=[False,False,False,True])
 
-    # Medal column with BLANK HEADER (keeps medals, no header text)
     def _medal(i: int) -> str:
         return "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else ""))
     top = full.head(top_n if top_n and top_n > 0 else 5).copy()
-    top.insert(0, "", [ _medal(i) for i in range(len(top)) ])  # blank header
+    top.insert(0, "", [ _medal(i) for i in range(len(top)) ])  # blank header for medal col
 
     if compact:
         show = top[["", "name", "points"]].rename(columns={"": " "})
@@ -594,10 +715,10 @@ def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n
 
     with st.expander("View full team leaderboard"):
         st.dataframe(
-            full[["jersey","name","goals","assists","points"]],
+            full[cols_full],
             use_container_width=True,
             hide_index=True,
-            height=380
+            height=420
         )
 
 def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame):
@@ -619,7 +740,6 @@ def render_coach_notes_and_summary(match_id: str,
                                    summaries: pd.DataFrame,
                                    events: pd.DataFrame):
     st.subheader("Coach Notes & Summary")
-
     mrow = matches.loc[matches["match_id"] == match_id]
     m = mrow.iloc[0] if not mrow.empty else pd.Series(dtype=object)
 
@@ -644,6 +764,84 @@ def render_coach_notes_and_summary(match_id: str,
     else:
         st.caption("AI summary unavailable (no Gemini key set or not enough context).")
 
+def render_goals_allowed_analysis(ga_df: pd.DataFrame,
+                                  matches: pd.DataFrame,
+                                  players: pd.DataFrame,
+                                  compact: bool=False):
+    st.subheader("Goals Allowed (Season)")
+    if ga_df.empty:
+        st.info("No rows in `goals_allowed` yet. Add columns: match_id, goal_id, description, goalie_player_id, minute, situation.")
+        return
+
+    pl = players.set_index("player_id") if "player_id" in players.columns else pd.DataFrame()
+    mx = matches.set_index("match_id") if "match_id" in matches.columns else pd.DataFrame()
+
+    view = ga_df.copy()
+    if not pl.empty:
+        view["goalie_name"] = view["goalie_player_id"].map(lambda pid: pl.at[str(pid), "name"] if str(pid) in pl.index else "")
+    else:
+        view["goalie_name"] = ""
+    if not mx.empty:
+        view["opponent"] = view["match_id"].map(lambda mid: mx.at[str(mid), "opponent"] if str(mid) in mx.index else "")
+        view["date"] = view["match_id"].map(lambda mid: mx.at[str(mid), "date"] if str(mid) in mx.index else "")
+        try: view["date"] = pd.to_datetime(view["date"], errors="coerce")
+        except Exception: pass
+    else:
+        view["opponent"] = ""; view["date"] = pd.NaT
+
+    view["minute_bucket"] = view["minute"].apply(_minute_bucket)
+
+    cols_show = [c for c in ["date","opponent","minute","minute_bucket","situation","goalie_name","description","goal_id"] if c in view.columns]
+    st.dataframe(view[cols_show].sort_values(["date","minute"], ascending=[True, True]),
+                 use_container_width=True, hide_index=True, height=320)
+
+    total_ga = len(view)
+    games = len(matches) if not matches.empty else 0
+    ga_per_game = (total_ga / games) if games > 0 else 0.0
+    c1,c2,c3 = st.columns(3)
+    c1.metric("Conceded (Total)", total_ga)
+    c2.metric("Games", games)
+    c3.metric("GA / Game", f"{ga_per_game:.2f}")
+
+    label_axis = alt.Axis(labelAngle=-30) if compact else alt.Axis()
+    h = 260 if compact else 300
+
+    by_sit = view.groupby("situation", as_index=False).size().rename(columns={"size":"count"})
+    by_sit["situation"] = by_sit["situation"].fillna("").replace({"": "Unspecified"}).str.title()
+    chart_sit = alt.Chart(by_sit).mark_bar().encode(
+        x=alt.X("situation:N", sort="-y", title="Situation", axis=label_axis),
+        y=alt.Y("count:Q", title="Goals Conceded"),
+        tooltip=["situation","count"]
+    ).properties(height=h)
+
+    order_buckets = ["0-15","16-30","31-45","46-60","61-75","76-90+","N/A"]
+    by_min = view.groupby("minute_bucket", as_index=False).size().rename(columns={"size":"count"})
+    by_min["minute_bucket"] = pd.Categorical(by_min["minute_bucket"], categories=order_buckets, ordered=True)
+    chart_min = alt.Chart(by_min).mark_bar().encode(
+        x=alt.X("minute_bucket:N", sort=order_buckets, title="Minute Window", axis=label_axis),
+        y=alt.Y("count:Q", title="Goals Conceded"),
+        tooltip=["minute_bucket","count"]
+    ).properties(height=h)
+
+    by_gk = view.groupby("goalie_name", as_index=False).size().rename(columns={"size":"count"})
+    by_gk["goalie_name"] = by_gk["goalie_name"].replace({"": "Unspecified"})
+    chart_gk = alt.Chart(by_gk).mark_bar().encode(
+        x=alt.X("goalie_name:N", sort="-y", title="Goalie", axis=label_axis),
+        y=alt.Y("count:Q", title="Goals Conceded"),
+        tooltip=["goalie_name","count"]
+    ).properties(height=h)
+
+    st.altair_chart(chart_sit | chart_min, use_container_width=True)
+    st.altair_chart(chart_gk, use_container_width=True)
+
+    if st.button("🔎 Generate AI Insights on Conceded Goals"):
+        ai_txt = generate_ai_conceded_summary(view, matches, players)
+        if ai_txt:
+            st.markdown("**AI Defensive Summary & Recommendations**")
+            st.write(ai_txt)
+        else:
+            st.caption("AI summary unavailable (no Gemini key set or not enough context).")
+
 def render_game_drilldown(match_id: str, matches: pd.DataFrame, players: pd.DataFrame, events: pd.DataFrame, plays_df: pd.DataFrame, summaries: pd.DataFrame):
     row = matches.loc[matches["match_id"] == match_id]
     if row.empty:
@@ -655,12 +853,23 @@ def render_game_drilldown(match_id: str, matches: pd.DataFrame, players: pd.Data
     st.header(f"Game View – {_format_date(m.get('date',''))} vs {m.get('opponent','')} ({m.get('home_away','')})")
     st.caption(f"Division: {'Yes' if m.get('division_game', False) else 'No'} | Result: {m.get('result','')} | Score: {m.get('goals_for','')}-{m.get('goals_against','')}")
 
-    by_player = per_player_for_match(events, players, match_id)
-    st.subheader("Per-Player Breakdown")
-    st.dataframe(by_player, use_container_width=True, hide_index=True)
+    by_player = (events.query("match_id == @match_id").copy()
+                 if "match_id" in events.columns else pd.DataFrame())
+    if by_player.empty:
+        base = players[["player_id","name","jersey","position"]].copy()
+        base["shots"]=base["goals"]=base["assists"]=base["points"]=0
+        view = base[["jersey","name","position","shots","goals","assists","points"]]
+    else:
+        sums = by_player.groupby("player_id", as_index=False)[["shots","goals","assists"]].sum()
+        sums["points"] = 2*sums["goals"] + sums["assists"]
+        view = sums.set_index("player_id").join(
+            players.set_index("player_id")[["name","jersey","position"]], how="left"
+        ).fillna({"name":"Unknown","position":"","jersey":0})
+        view = view.reset_index()[["jersey","name","position","shots","goals","assists","points"]]
+        view = view.sort_values(["points","goals","shots"], ascending=[False,False,False])
 
-    st.divider()
-    render_coach_notes_and_summary(match_id, matches, summaries, events)
+    st.subheader("Per-Player Breakdown")
+    st.dataframe(view, use_container_width=True, hide_index=True)
 
     st.subheader("Set-Play Attempts (this game)")
     sp = plays_df.query("match_id == @match_id") if not plays_df.empty else pd.DataFrame()
@@ -671,6 +880,9 @@ def render_game_drilldown(match_id: str, matches: pd.DataFrame, players: pd.Data
         df_show = sp[cols].rename(columns={"play_call_id":"Play Call"})
         df_show = df_show[["set_piece","Play Call","play_type","taker_notes","goal_created"]]
         st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+    st.divider()
+    render_coach_notes_and_summary(match_id, matches, summaries, events)
 
     st.divider()
     c1,c2 = st.columns([1,1])
@@ -685,22 +897,21 @@ players = load_players()
 events = load_events()
 plays_simple = load_plays_simple()
 summaries = load_summaries()
+goals_allowed = load_goals_allowed()
 
-# Sidebar — simplified + Compact toggle
+# Sidebar
 with st.sidebar:
     st.title("HS Soccer")
-
     if st.button("🏠 Dashboard (Home)"):
         _qparams_set(); st.rerun()
 
-    # 📱 Compact mode for phones (default ON)
     COMPACT_DEFAULT = True
     compact = st.toggle("📱 Compact mode", value=COMPACT_DEFAULT, help="Phone-friendly layout")
 
     div_only = st.checkbox("Division games only", value=False)
 
-    st.link_button("📅 Open Schedule", SI_SCHEDULE_URL, help="Opens SBLive schedule in a new tab")
-    st.link_button("🏆 Open Rankings (D2)", SI_RANKINGS_URL, help="Opens SBLive division rankings in a new tab")
+    st.link_button("📅 Open Schedule", SI_SCHEDULE_URL)
+    st.link_button("🏆 Open Rankings (D2)", SI_RANKINGS_URL)
 
     st.divider()
     if st.button("🔄 Refresh Google Sheets"):
@@ -708,14 +919,15 @@ with st.sidebar:
         st.success("Google Sheets cache cleared.")
         st.rerun()
 
-# filter view if division-only
+# Filter if division-only
 if div_only and not matches.empty:
     matches_view = matches.query("division_game == True")
     keep = set(matches_view["match_id"].astype(str))
     events_view = events[events["match_id"].astype(str).isin(keep)] if "match_id" in events.columns else events
-    plays_view = plays_simple[plays_simple["match_id"].astype(str).isin(keep)] if not plays_simple.empty else plays_simple
+    plays_view  = plays_simple[plays_simple["match_id"].astype(str).isin(keep)] if not plays_simple.empty else plays_simple
+    ga_view     = goals_allowed[goals_allowed["match_id"].astype(str).isin(keep)] if not goals_allowed.empty else goals_allowed
 else:
-    matches_view, events_view, plays_view = matches, events, plays_simple
+    matches_view, events_view, plays_view, ga_view = matches, events, plays_simple, goals_allowed
 
 # Drill-in param
 qp = _qparams_get()
@@ -726,7 +938,7 @@ try:
 except Exception:
     pass
 
-# Get D2 rank (KPI only)
+# D2 rank (KPI only)
 our_rank = None
 try:
     si_html_rank = fetch_html(SI_RANKINGS_URL)
@@ -735,7 +947,7 @@ try:
 except Exception:
     our_rank = None
 
-# Routing — Dashboard vs Game View
+# Routing
 if match_id:
     render_game_drilldown(match_id, matches_view, players, events_view, plays_view, summaries)
 else:
@@ -770,6 +982,9 @@ else:
 
     st.divider()
     render_points_leaderboard(events_view, players, top_n=5, compact=compact)
+
+    st.divider()
+    render_goals_allowed_analysis(ga_view, matches_view, players, compact=compact)
 
     st.divider()
     render_set_piece_analysis_from_plays(plays_view)
