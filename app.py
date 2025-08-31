@@ -3,6 +3,14 @@ import os
 import re
 from typing import Optional, Tuple, Dict
 
+# --- Make HTTPS robust on Windows/local: point requests to a known CA bundle ---
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except Exception:
+    pass
+
 import altair as alt
 import pandas as pd
 import streamlit as st
@@ -26,16 +34,12 @@ st.set_page_config(page_title="HS Soccer Dashboard", layout="wide")
 load_dotenv()
 
 # Streamlit Secrets fallback (for Cloud)
-# This lets the app work both locally and on Streamlit Cloud without edits.
 try:
-    # SPREADSHEET_KEY can be a key or a full URL
     SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY") or st.secrets.get("SPREADSHEET_KEY", "YOUR_SPREADSHEET_KEY_OR_URL")
-    # Populate other envs from Secrets if not already set
     for _k in ["GEMINI_API_KEY", "APP_PASSWORD", "GOOGLE_SERVICE_ACCOUNT_JSON"]:
         if not os.getenv(_k) and _k in st.secrets:
             os.environ[_k] = st.secrets[_k]
 except Exception:
-    # If st.secrets is unavailable (pure local), ensure SPREADSHEET_KEY is set
     SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY", "YOUR_SPREADSHEET_KEY_OR_URL")
 
 # Tiny CSS + mobile polish
@@ -54,10 +58,32 @@ def _inject_css():
           }
           a.tiny-open:hover { background:#e6e9ef; }
 
-          /* Mobile tweaks */
+          /* ----- Mobile card list styles ----- */
+          .game-card {
+            border:1px solid #e6e9ef;
+            border-radius:12px;
+            padding:12px 14px;
+            margin:10px 0 14px;
+            background:#ffffff;
+            box-shadow:0 1px 2px rgba(0,0,0,0.04);
+          }
+          .gc-row {
+            display:flex; align-items:center; justify-content:space-between; gap:12px;
+          }
+          .gc-date { font-size:0.92rem; color:#6b7280; }
+          .gc-opp  { font-weight:600; font-size:1.05rem; }
+          .gc-score{ font-weight:700; font-size:1.15rem; white-space:nowrap; }
+          .gc-meta { margin-top:6px; display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+          .pill {
+            padding:2px 8px; border-radius:999px; background:#f0f2f6; font-size:12px;
+          }
+          .pill.home { background:#e8f5e9; }  /* light green */
+          .pill.away { background:#e3f2fd; }  /* light blue  */
+          .pill.div  { background:#fff7ed; }  /* light orange*/
+
           @media (max-width: 480px) {
             .block-container { padding-top: 0.75rem; padding-left: 0.6rem; padding-right: 0.6rem; }
-            a.tiny-open { padding:6px 10px; font-size:14px; } /* easier to tap */
+            a.tiny-open { padding:6px 10px; font-size:14px; }
           }
         </style>
         """,
@@ -81,7 +107,7 @@ def require_app_password():
 
 require_app_password()
 
-# External (SI/SBLive)
+# External (SI/SBLive) — used only for D2 Rank KPI and quick links
 SI_BASE = "https://www.si.com/high-school/stats/vermont"
 DIVISION_SLUGS = {2: "28806-division-2"}
 SI_TEAM_SLUG = "397925-milton-yellowjackets"
@@ -302,20 +328,30 @@ def set_piece_leaderboard_from_plays(plays_df: pd.DataFrame) -> pd.DataFrame:
         ["Goal%","attempts","Play Call"], ascending=[False,False,True]
     )
 
-# Rolling-3 trends
+# Rolling-3 trends using conversion rates
 def build_trend_frame(matches: pd.DataFrame) -> pd.DataFrame:
-    if matches.empty: return pd.DataFrame()
+    if matches.empty:
+        return pd.DataFrame()
     df = matches.sort_values("date").copy()
-    df["GF"] = df.get("goals_for",0)
-    df["GA"] = df.get("goals_against",0)
-    sv = df.get("saves", pd.Series([0]*len(df)))
+    df["GF"] = df.get("goals_for", 0)
+    df["GA"] = df.get("goals_against", 0)
+
+    sv  = df.get("saves", pd.Series([0]*len(df)))
+    shf = df.get("shots_for", pd.Series([0]*len(df)))
+    sha = df.get("shots_against", pd.Series([0]*len(df)))
+
+    # Save%
     denom_sv = sv + df["GA"]
-    df["Save%"] = (sv/denom_sv*100).where(denom_sv>0, 0.0)
-    total = df["GF"] + df["GA"]
-    df["GF%"] = (df["GF"]/total*100).where(total>0, 0.0)
-    df["GA%"] = (df["GA"]/total*100).where(total>0, 0.0)
-    roll = df[["GF","GA","Save%","GF%","GA%"]].rolling(3, min_periods=1).mean()
-    for c in roll.columns: df[f"R3 {c}"] = roll[c]
+    df["Save%"] = (sv / denom_sv * 100).where(denom_sv > 0, 0.0)
+
+    # Shot conversion rates per match
+    df["GF Conv%"] = (df["GF"] / shf * 100).where(shf > 0, 0.0)
+    df["GA Conv%"] = (df["GA"] / sha * 100).where(sha > 0, 0.0)
+
+    # Rolling means (window=3)
+    roll = df[["GF", "GA", "Save%", "GF Conv%", "GA Conv%"]].rolling(3, min_periods=1).mean()
+    for c in roll.columns:
+        df[f"R3 {c}"] = roll[c]
     df["Date"] = df["date"]
     return df
 
@@ -379,15 +415,22 @@ def generate_ai_game_summary(match_row: pd.Series,
 # UI RENDERERS (with compact/mobile variants)
 # ---------------------------------------------------------------------
 def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact: bool=False):
+    # aggregates
     gf = int(matches_view.get("goals_for", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
     ga = int(matches_view.get("goals_against", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
-    sh = int(matches_view.get("shots_for", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
+    sh_for = int(matches_view.get("shots_for", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
+    sh_ag  = int(matches_view.get("shots_against", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
     sv = int(matches_view.get("saves", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
     games = int(len(matches_view))
-    save_pct = (sv/(sv+ga)*100.0) if (sv+ga)>0 else 0.0
-    total_goals = gf + ga
-    gf_pct = (gf/total_goals*100.0) if total_goals>0 else 0.0
-    ga_pct = 100.0 - gf_pct if total_goals>0 else 0.0
+
+    # Save% as saves / (saves + GA)
+    save_denom = sv + ga
+    save_pct = (sv / save_denom * 100.0) if save_denom > 0 else 0.0
+
+    # Shot conversion rates
+    conv_for_pct = (gf / sh_for * 100.0) if sh_for > 0 else 0.0
+    conv_agn_pct = (ga / sh_ag  * 100.0) if sh_ag  > 0 else 0.0
+
     record_str = _team_record_text(matches_view)
 
     if compact:
@@ -401,9 +444,13 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
     else:
         cols = st.columns(10)
         cols[0].metric("Games", games)
-        cols[1].metric("GF", gf); cols[2].metric("GA", ga)
-        cols[3].metric("Shots (For)", sh); cols[4].metric("Saves", sv)
-        cols[5].metric("Save%", f"{save_pct:.1f}%"); cols[6].metric("GF%", f"{gf_pct:.1f}%"); cols[7].metric("GA%", f"{ga_pct:.1f}%")
+        cols[1].metric("GF", gf)
+        cols[2].metric("GA", ga)
+        cols[3].metric("Shots (For)", sh_for)
+        cols[4].metric("Saves", sv)
+        cols[5].metric("Save%", f"{save_pct:.1f}%")
+        cols[6].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
+        cols[7].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
         cols[8].metric("Record", record_str)
         if d2_rank:
             cols[9].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
@@ -413,39 +460,65 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
     if matches.empty:
         st.info("No matches yet. Add rows to the 'matches' tab in your Google Sheet.")
         return
+
     view = matches.sort_values("date").copy()
     if {"goals_for","goals_against"}.issubset(view):
         view["GF-GA"] = view["goals_for"].astype(int).astype(str) + "-" + view["goals_against"].astype(int).astype(str)
     else:
         view["GF-GA"] = ""
 
+    def _ha_pill(v: str) -> str:
+        if str(v).upper() == "H": return "<span class='pill home'>Home</span>"
+        if str(v).upper() == "A": return "<span class='pill away'>Away</span>"
+        return "<span class='pill'>H/A</span>"
+
+    def _div_pill(is_div: bool) -> str:
+        return "<span class='pill div'>Division</span>" if bool(is_div) else "<span class='pill'>Non-division</span>"
+
     if compact:
-        hdr = st.columns((1.2, 2.4, 1.0, 0.7))
-        for c,t in zip(hdr, ["Date", "Opponent", "GF-GA", ""]): c.markdown(f"**{t}**" if t else "")
         for idx, r in view.iterrows():
-            cols = st.columns((1.2, 2.4, 1.0, 0.7))
-            cols[0].write(_format_date(r.get("date","")))
-            cols[1].markdown(_color_opp(r.get("opponent",""), r.get("result","")), unsafe_allow_html=True)
-            cols[2].write(r.get("GF-GA",""))
+            date_html = _format_date(r.get("date",""))
+            opp_html  = _color_opp(r.get("opponent",""), r.get("result",""))
+            score     = r.get("GF-GA","")
+            ha_html   = _ha_pill(r.get("home_away",""))
+            div_html  = _div_pill(r.get("division_game", False))
             mid = str(r.get("match_id","") or f"row{idx}")
-            cols[3].markdown(f"<a class='tiny-open' href='?match_id={mid}' title='Open game'>↗</a>", unsafe_allow_html=True)
-    else:
-        hdr = st.columns((0.3, 1.2, 2, 2.4, 0.9, 1.2, 1.0, 1.0, 0.9, 0.7))
-        for c,t in zip(hdr, ["", "Date", "Match ID", "Opponent", "H/A", "Division", "GF-GA", "Shots", "Saves", ""]):
-            c.markdown(f"**{t}**" if t else "")
-        for idx, r in view.iterrows():
-            cols = st.columns((0.3, 1.2, 2, 2.4, 0.9, 1.2, 1.0, 1.0, 0.9, 0.7))
-            cols[0].markdown(_status_dot(r.get("result","")), unsafe_allow_html=True)
-            cols[1].write(_format_date(r.get("date","")))
-            cols[2].write(r.get("match_id",""))
-            cols[3].markdown(_color_opp(r.get("opponent",""), r.get("result","")), unsafe_allow_html=True)
-            cols[4].write(r.get("home_away",""))
-            cols[5].write("✅" if r.get("division_game", False) else "–")
-            cols[6].write(r.get("GF-GA",""))
-            cols[7].write(r.get("shots_for", r.get("shots","")))
-            cols[8].write(r.get("saves",""))
-            mid = str(r.get("match_id","") or f"row{idx}")
-            cols[9].markdown(f"<a class='tiny-open' href='?match_id={mid}' title='Open game'>↗</a>", unsafe_allow_html=True)
+
+            card = f"""
+            <div class="game-card">
+              <div class="gc-row">
+                <div>
+                  <div class="gc-date">{date_html}</div>
+                  <div class="gc-opp">{opp_html}</div>
+                </div>
+                <div class="gc-score">{score}</div>
+              </div>
+              <div class="gc-meta">
+                {ha_html}{div_html}
+                <a class="tiny-open" href="?match_id={mid}" title="Open game">↗ Open</a>
+              </div>
+            </div>
+            """
+            st.markdown(card, unsafe_allow_html=True)
+        return
+
+    # Desktop table
+    hdr = st.columns((0.3, 1.2, 2, 2.4, 0.9, 1.2, 1.0, 1.0, 0.9, 0.7))
+    for c,t in zip(hdr, ["", "Date", "Match ID", "Opponent", "H/A", "Division", "GF-GA", "Shots", "Saves", ""]):
+        c.markdown(f"**{t}**" if t else "")
+    for idx, r in view.iterrows():
+        cols = st.columns((0.3, 1.2, 2, 2.4, 0.9, 1.2, 1.0, 1.0, 0.9, 0.7))
+        cols[0].markdown(_status_dot(r.get("result","")), unsafe_allow_html=True)
+        cols[1].write(_format_date(r.get("date","")))
+        cols[2].write(r.get("match_id",""))
+        cols[3].markdown(_color_opp(r.get("opponent",""), r.get("result","")), unsafe_allow_html=True)
+        cols[4].write(r.get("home_away",""))
+        cols[5].write("✅" if r.get("division_game", False) else "–")
+        cols[6].write(r.get("GF-GA",""))
+        cols[7].write(r.get("shots_for", r.get("shots","")))
+        cols[8].write(r.get("saves",""))
+        mid = str(r.get("match_id","") or f"row{idx}")
+        cols[9].markdown(f"<a class='tiny-open' href='?match_id={mid}' title='Open game'>↗</a>", unsafe_allow_html=True)
 
 def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n: int = 5, compact: bool=False):
     st.subheader("Points Leaderboard")
@@ -653,7 +726,7 @@ try:
 except Exception:
     pass
 
-# Get D2 rank (KPI)
+# Get D2 rank (KPI only)
 our_rank = None
 try:
     si_html_rank = fetch_html(SI_RANKINGS_URL)
@@ -681,12 +754,17 @@ else:
         else:
             label_axis = alt.Axis(labelAngle=-45) if compact else alt.Axis()
             h = 220
-            for col, title in [("R3 GF","Goals For (R3)"), ("R3 GA","Goals Against (R3)"),
-                               ("R3 Save%","Save% (R3)"), ("R3 GF%","GF% (R3)"), ("R3 GA%","GA% (R3)")]:
+            for col, title in [
+                ("R3 GF","Goals For (R3)"),
+                ("R3 GA","Goals Against (R3)"),
+                ("R3 Save%","Save% (R3)"),
+                ("R3 GF Conv%","Conv% (For) (R3)"),
+                ("R3 GA Conv%","Conv% (Agst) (R3)")
+            ]:
                 ch = alt.Chart(df_tr).mark_line(point=True).encode(
                     x=alt.X("Date:T", title="Date", axis=label_axis),
                     y=alt.Y(f"{col}:Q", title=title),
-                    tooltip=["Date","GF","GA","Save%","GF%","GA%",col]
+                    tooltip=["Date","GF","GA","Save%","GF Conv%","GA Conv%",col]
                 ).properties(height=h)
                 st.altair_chart(ch, use_container_width=True)
 

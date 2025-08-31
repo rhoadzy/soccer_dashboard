@@ -1,77 +1,90 @@
 # google_sheets_adapter.py
 import os
-import io
 import json
-import requests
+import time
+from typing import Union
 import pandas as pd
+
 import gspread
 from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import Request
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
 
-def _gspread_client():
+def _build_credentials() -> Credentials:
     """
-    Build a gspread client using a service-account JSON loaded from:
-    - GOOGLE_SERVICE_ACCOUNT_JSON (stringified JSON from Streamlit Secrets), or
-    - service_account.json on disk (local dev).
+    Prefer GOOGLE_SERVICE_ACCOUNT_JSON (Streamlit Cloud).
+    Fallback to GOOGLE_APPLICATION_CREDENTIALS or ./service_account.json (local).
     """
-    json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-    if json_str:
-        info = json.loads(json_str)
-        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-        return gspread.authorize(creds)
+    json_blob = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if json_blob:
+        info = json.loads(json_blob)
+        creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+        return creds
 
-    if os.path.exists("service_account.json"):
-        creds = Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
-        return gspread.authorize(creds)
+    # Local file path via env var or default file name
+    key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "service_account.json")
+    if not os.path.exists(key_path):
+        raise FileNotFoundError(
+            f"Service account JSON not found at '{key_path}'. "
+            "Set GOOGLE_SERVICE_ACCOUNT_JSON in secrets or provide service_account.json locally."
+        )
+    creds = Credentials.from_service_account_file(key_path, scopes=_SCOPES)
+    return creds
 
-    return None  # No creds found
+def _authorize_client() -> gspread.Client:
+    creds = _build_credentials()
+    # Ensure token freshness
+    if not creds.valid:
+        request = Request()
+        creds.refresh(request)
+    return gspread.authorize(creds)
 
-def _maybe_public_csv(spreadsheet_key_or_url: str, sheet_name: str) -> pd.DataFrame:
+def _retry(fn, *, tries=3, delay=0.8, backoff=2.0):
     """
-    Fallback for public/anyone-with-link sheets (no creds). Requires the sheet to be viewable.
+    Simple exponential backoff retry for transient network/auth errors.
     """
-    # Try to extract the key if URL
-    key = None
-    if "spreadsheets/d/" in spreadsheet_key_or_url:
-        # URL form
+    last_exc = None
+    _delay = delay
+    for _ in range(tries):
         try:
-            key = spreadsheet_key_or_url.split("spreadsheets/d/")[1].split("/")[0]
-        except Exception:
-            key = None
-    else:
-        key = spreadsheet_key_or_url
-
-    if not key:
-        raise RuntimeError("Spreadsheet key not found and no credentials provided.")
-
-    # CSV export endpoint
-    url = f"https://docs.google.com/spreadsheets/d/{key}/gviz/tq?tqx=out:csv&sheet={sheet_name}"
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    return pd.read_csv(io.StringIO(r.text))
-
-def read_sheet_to_df(spreadsheet_key_or_url: str, sheet_name: str) -> pd.DataFrame:
-    """
-    Read a Google Sheet tab into a DataFrame.
-    Supports:
-      - Service account auth (preferred)
-      - Public CSV export (fallback)
-    `spreadsheet_key_or_url` can be either a key or full URL.
-    """
-    client = _gspread_client()
-    if client:
-        try:
-            if "spreadsheets/d/" in spreadsheet_key_or_url:
-                sh = client.open_by_url(spreadsheet_key_or_url)
-            else:
-                sh = client.open_by_key(spreadsheet_key_or_url)
-            ws = sh.worksheet(sheet_name)
-            return pd.DataFrame(ws.get_all_records())
+            return fn()
         except Exception as e:
-            # If authenticated path fails (e.g., no access), re-raise;
-            # caller can decide to handle it or rely on public fallback.
-            raise
+            last_exc = e
+            time.sleep(_delay)
+            _delay *= backoff
+    raise last_exc
 
-    # No creds: try public CSV fallback
-    return _maybe_public_csv(spreadsheet_key_or_url, sheet_name)
+def _open_spreadsheet(client: gspread.Client, key_or_url: str):
+    # Accept either a key or a full URL
+    if key_or_url.startswith("http://") or key_or_url.startswith("https://"):
+        return _retry(lambda: client.open_by_url(key_or_url))
+    else:
+        return _retry(lambda: client.open_by_key(key_or_url))
+
+def read_sheet_to_df(spreadsheet_key_or_url: str, worksheet_name: str) -> pd.DataFrame:
+    """
+    Read a worksheet into a pandas DataFrame.
+    - First row is treated as headers.
+    - Empty worksheet -> empty DataFrame.
+    """
+    client = _authorize_client()
+    sh = _open_spreadsheet(client, spreadsheet_key_or_url)
+
+    ws = _retry(lambda: sh.worksheet(worksheet_name))
+    values = _retry(lambda: ws.get_all_values())
+
+    if not values:
+        return pd.DataFrame()
+
+    header, *rows = values
+    if not header:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows, columns=[str(c).strip() for c in header])
+    # Strip whitespace everywhere
+    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+    return df
