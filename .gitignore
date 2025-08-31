@@ -1,0 +1,6 @@
+# local env & keys
+.env
+service_account.json
+hs-soccer-dashboard-*.json
+*.secret.json
+*.credentials.json
