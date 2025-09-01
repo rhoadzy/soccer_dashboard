@@ -1119,42 +1119,14 @@ with st.sidebar:
     st.subheader("Filters")
     opponent_q = st.text_input("Opponent contains", value=str(qp_init.get("opp","")))
     ha_opt = st.selectbox("Home/Away", ["Any","Home","Away"], index={"any":0,"home":1,"away":2}.get(str(qp_init.get("ha","any")).lower(),0))
-    # Date range
-    if not matches.empty and "date" in matches.columns:
-        dmin = pd.to_datetime(matches["date"], errors="coerce").min()
-        dmax = pd.to_datetime(matches["date"], errors="coerce").max()
-        if pd.isna(dmin) or pd.isna(dmax):
-            date_rng = None
-        else:
-            date_rng = st.date_input("Date range", value=(dmin.date(), dmax.date()))
-    else:
-        date_rng = None
+
 
     st.link_button("📅 Open Schedule", SI_SCHEDULE_URL)
     st.link_button("🏆 Open Rankings (D2)", SI_RANKINGS_URL)
 
-    st.divider()
-    if st.button("🔄 Refresh Google Sheets"):
-        st.cache_data.clear()
-        st.session_state["cache_cleared_at"] = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-        st.success("Google Sheets cache cleared.")
-        st.rerun()
 
-    # Shareable link (read-only field)
-    st.divider()
-    st.caption("Share current view")
-    cur_qp = _qparams_get()
-    base_url = "?"
-    try:
-        # build a simple query string of current params
-        items = []
-        for k, v in dict(cur_qp).items():
-            if isinstance(v, list): v = v[0] if v else ""
-            items.append(f"{k}={v}")
-        qstr = base_url + "&".join(items) if items else "?"
-    except Exception:
-        qstr = "?"
-    st.text_input("Link", value=qstr, help="Copy to share filters and selection", label_visibility="collapsed")
+
+
 
     # Sync toggles/filters to query params only when they differ
     try:
@@ -1164,10 +1136,7 @@ with st.sidebar:
             "opp": opponent_q.strip(),
             "ha": ha_opt[0].lower() if ha_opt else "any",
         }
-        # add date range if selected
-        if isinstance(date_rng, tuple) and len(date_rng) == 2:
-            desired["start"] = str(date_rng[0])
-            desired["end"] = str(date_rng[1])
+
         # Only update if any difference
         diffs = []
         for k, v in desired.items():
@@ -1201,15 +1170,7 @@ if ha_val in ("h","home","a","away") and not matches_view.empty and "home_away" 
     want = "H" if ha_val.startswith("h") else "A"
     matches_view = matches_view[matches_view["home_away"].astype(str).str.upper() == want]
 
-start = qp.get("start"); end = qp.get("end")
-if isinstance(start, list): start = start[0]
-if isinstance(end, list): end = end[0]
-if start and end and not matches_view.empty and "date" in matches_view:
-    try:
-        s = pd.to_datetime(start); e = pd.to_datetime(end) + pd.Timedelta(days=1)
-        matches_view = matches_view[(matches_view["date"] >= s) & (matches_view["date"] < e)]
-    except Exception:
-        pass
+
 
 # Derive related views by match_id
 if not matches_view.empty and "match_id" in matches_view:
@@ -1261,7 +1222,7 @@ else:
 
     _team_kpis(matches_view, d2_rank=our_rank, compact=compact)
 
-    tabs = st.tabs(["Games","Trends","Leaders","Defense","Set Pieces"])
+    tabs = st.tabs(["Games","Trends","Leaders","Goals Allowed","Set Pieces"])
 
     with tabs[0]:
         render_games_table(matches_view, compact=compact)
