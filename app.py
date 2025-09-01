@@ -546,6 +546,7 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
             ("GF", gf),
             ("GA", ga),
             ("Shots (For)", sh_for),
+            ("Shots (Agst)", sh_ag),
             ("Saves", sv),
             ("Save%", f"{save_pct:.1f}%"),
             ("Conv% (For)", f"{conv_for_pct:.1f}%"),
@@ -562,18 +563,19 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
         return
 
     # ---------- Desktop: keep classic metrics row ----------
-    cols = st.columns(10)
+    cols = st.columns(11)
     cols[0].metric("Games", games)
     cols[1].metric("GF", gf)
     cols[2].metric("GA", ga)
     cols[3].metric("Shots (For)", sh_for)
-    cols[4].metric("Saves", sv)
-    cols[5].metric("Save%", f"{save_pct:.1f}%")
-    cols[6].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
-    cols[7].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
-    cols[8].metric("Record", record_str)
+    cols[4].metric("Shots (Agst)", sh_ag)
+    cols[5].metric("Saves", sv)
+    cols[6].metric("Save%", f"{save_pct:.1f}%")
+    cols[7].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
+    cols[8].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
+    cols[9].metric("Record", record_str)
     if d2_rank:
-        cols[9].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
+        cols[10].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
 
 def render_games_table(matches: pd.DataFrame, compact: bool=False):
     st.subheader("Games")
@@ -781,7 +783,7 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame):
         ).properties(height=280)
         st.altair_chart(chart, use_container_width=True)
 
-    st.caption("Note: 'taker_id' in your sheet is free-form notes; we display it as 'taker_notes'.")
+
 
 def render_coach_notes_and_summary(match_id: str,
                                    matches: pd.DataFrame,
