@@ -100,6 +100,13 @@ def _inject_css():
             a.tiny-open { padding:6px 10px; font-size:14px; }
             .stat-value { font-size:1.8rem; }
           }
+
+          /* Print-friendly view: hide sidebar/nav when printing */
+          @media print {
+            section[data-testid="stSidebar"], header { display: none !important; }
+            .block-container { padding: 0 !important; }
+            a.tiny-open { display: none !important; }
+          }
         </style>
         """,
         unsafe_allow_html=True,
@@ -146,6 +153,23 @@ def _qparams_set(**kwargs):
         for k,v in kwargs.items(): st.query_params[k] = v
     except Exception:
         st.experimental_set_query_params(**kwargs)
+
+def _qparams_merge_update(**kwargs):
+    """Merge update query params without dropping existing ones."""
+    try:
+        qp = dict(st.query_params)
+    except Exception:
+        qp = dict(st.experimental_get_query_params())
+    # Flatten list values from experimental API
+    qp2 = {k: (v[0] if isinstance(v, list) and v else v) for k,v in qp.items()}
+    qp2.update({k: v for k,v in kwargs.items() if v is not None})
+    _qparams_set(**qp2)
+
+def _qp_bool(val, default=False) -> bool:
+    if val is None: return default
+    if isinstance(val, list): val = val[0] if val else ""
+    s = str(val).strip().lower()
+    return s in ("1","true","t","yes","y","on")
 
 def _format_date(val) -> str:
     ts = pd.to_datetime(val, errors="coerce")
@@ -267,14 +291,17 @@ def load_plays_simple() -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def load_summaries() -> pd.DataFrame:
-    try:
-        df = read_sheet_to_df(SPREADSHEET_KEY, "summary")
-        df.columns = [str(c).strip().lower() for c in df.columns]
-        if "match_id" in df.columns:
-            df["match_id"] = df["match_id"].astype(str)
-        return df
-    except Exception:
-        return pd.DataFrame()
+    # Support both 'summary' and 'summaries'
+    for tab in ("summary", "summaries"):
+        try:
+            df = read_sheet_to_df(SPREADSHEET_KEY, tab)
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            if "match_id" in df.columns:
+                df["match_id"] = df["match_id"].astype(str)
+            return df
+        except Exception:
+            continue
+    return pd.DataFrame()
 
 @st.cache_data(ttl=300)
 def load_goals_allowed() -> pd.DataFrame:
@@ -664,6 +691,9 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
     cols[9].metric("Record", record_str)
     if d2_rank:
         cols[10].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
+    else:
+        cols[10].metric("D2 Rank", "N/A")
+        st.caption("Rank unavailable or not fetched. Click 'Open Rankings (D2)' in the sidebar.")
 
 def render_games_table(matches: pd.DataFrame, compact: bool=False):
     st.subheader("Games")
@@ -695,19 +725,21 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
             mid = str(r.get("match_id","") or f"row{idx}")
 
             card = f"""
-            <div class="game-card">
-              <div class="gc-row">
-                <div>
-                  <div class="gc-date">{date_html}</div>
-                  <div class="gc-opp">{opp_html}</div>
+            <a href='?match_id={mid}' style='text-decoration:none; color:inherit;'>
+              <div class="game-card">
+                <div class="gc-row">
+                  <div>
+                    <div class="gc-date">{date_html}</div>
+                    <div class="gc-opp">{opp_html}</div>
+                  </div>
+                  <div class="gc-score">{score}</div>
                 </div>
-                <div class="gc-score">{score}</div>
+                <div class="gc-meta">
+                  {ha_html}{div_html}
+                  <span class="tiny-open">↗ Open</span>
+                </div>
               </div>
-              <div class="gc-meta">
-                {ha_html}{div_html}
-                <a class="tiny-open" href='?match_id={mid}' title='Open game'>↗ Open</a>
-              </div>
-            </div>
+            </a>
             """
             st.markdown(card, unsafe_allow_html=True)
         return
@@ -720,14 +752,22 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
         cols[0].markdown(_status_dot(r.get("result","")), unsafe_allow_html=True)
         cols[1].write(_format_date(r.get("date","")))
         cols[2].write(r.get("match_id",""))
-        cols[3].markdown(_color_opp(r.get("opponent",""), r.get("result","")), unsafe_allow_html=True)
+        mid = str(r.get("match_id","") or f"row{idx}")
+        cols[3].markdown(f"<a href='?match_id={mid}' style='text-decoration:none'>{_color_opp(r.get('opponent',''), r.get('result',''))}</a>", unsafe_allow_html=True)
         cols[4].write(r.get("home_away",""))
         cols[5].write("✅" if r.get("division_game", False) else "–")
         cols[6].write(r.get("GF-GA",""))
         cols[7].write(r.get("shots_for", r.get("shots","")))
         cols[8].write(r.get("saves",""))
-        mid = str(r.get("match_id","") or f"row{idx}")
         cols[9].markdown(f"<a class='tiny-open' href='?match_id={mid}' title='Open game'>↗</a>", unsafe_allow_html=True)
+
+    # CSV download of games
+    try:
+        export_cols = [c for c in ["date","match_id","opponent","home_away","division_game","GF-GA","shots_for","saves"] if c in view.columns]
+        csv = view[export_cols].to_csv(index=False).encode('utf-8')
+        st.download_button("⬇ Download games (CSV)", data=csv, file_name="games.csv", mime="text/csv")
+    except Exception:
+        pass
 
 def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n: int = 5, compact: bool=False):
     st.subheader("Points Leaderboard")
@@ -811,6 +851,11 @@ def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n
             hide_index=True,
             height=420
         )
+        try:
+            csv = full[cols_full].to_csv(index=False).encode('utf-8')
+            st.download_button("⬇ Download leaderboard (CSV)", data=csv, file_name="leaderboard.csv", mime="text/csv")
+        except Exception:
+            pass
 
 def _set_piece_type_stats(df: pd.DataFrame, sp_type: str) -> tuple[int, float]:
     """Return (total_attempts, pct_scored) for a given set_piece type (lowercase)."""
@@ -944,6 +989,12 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
     cols_show = [c for c in ["date","opponent","minute","minute_bucket","situation","goalie_name","description","goal_id"] if c in view.columns]
     st.dataframe(view[cols_show].sort_values(["date","minute"], ascending=[True, True]),
                  use_container_width=True, hide_index=True, height=320)
+    # CSV download for goals allowed table
+    try:
+        csv = view[cols_show].to_csv(index=False).encode('utf-8')
+        st.download_button("⬇ Download goals allowed (CSV)", data=csv, file_name="goals_allowed.csv", mime="text/csv")
+    except Exception:
+        pass
 
     total_ga = len(view)
     games = len(matches) if not matches.empty else 0
@@ -1055,10 +1106,29 @@ with st.sidebar:
     if st.button("🏠 Dashboard (Home)"):
         _qparams_set(); st.rerun()
 
+    # Read qp for initial toggle values
+    qp_init = _qparams_get()
     COMPACT_DEFAULT = True
-    compact = st.toggle("📱 Compact mode", value=COMPACT_DEFAULT, help="Phone-friendly layout")
+    compact_init = _qp_bool(qp_init.get("compact"), COMPACT_DEFAULT)
+    div_only_init = _qp_bool(qp_init.get("div_only"), False)
 
-    div_only = st.checkbox("Division games only", value=False)
+    compact = st.toggle("📱 Compact mode", value=compact_init, help="Phone-friendly layout")
+    div_only = st.checkbox("Division games only", value=div_only_init)
+
+    # Global filters
+    st.subheader("Filters")
+    opponent_q = st.text_input("Opponent contains", value=str(qp_init.get("opp","")))
+    ha_opt = st.selectbox("Home/Away", ["Any","Home","Away"], index={"any":0,"home":1,"away":2}.get(str(qp_init.get("ha","any")).lower(),0))
+    # Date range
+    if not matches.empty and "date" in matches.columns:
+        dmin = pd.to_datetime(matches["date"], errors="coerce").min()
+        dmax = pd.to_datetime(matches["date"], errors="coerce").max()
+        if pd.isna(dmin) or pd.isna(dmax):
+            date_rng = None
+        else:
+            date_rng = st.date_input("Date range", value=(dmin.date(), dmax.date()))
+    else:
+        date_rng = None
 
     st.link_button("📅 Open Schedule", SI_SCHEDULE_URL)
     st.link_button("🏆 Open Rankings (D2)", SI_RANKINGS_URL)
@@ -1066,20 +1136,89 @@ with st.sidebar:
     st.divider()
     if st.button("🔄 Refresh Google Sheets"):
         st.cache_data.clear()
+        st.session_state["cache_cleared_at"] = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M UTC")
         st.success("Google Sheets cache cleared.")
         st.rerun()
+
+    # Shareable link (read-only field)
+    st.divider()
+    st.caption("Share current view")
+    cur_qp = _qparams_get()
+    base_url = "?"
+    try:
+        # build a simple query string of current params
+        items = []
+        for k, v in dict(cur_qp).items():
+            if isinstance(v, list): v = v[0] if v else ""
+            items.append(f"{k}={v}")
+        qstr = base_url + "&".join(items) if items else "?"
+    except Exception:
+        qstr = "?"
+    st.text_input("Link", value=qstr, help="Copy to share filters and selection", label_visibility="collapsed")
+
+    # Sync toggles/filters to query params only when they differ
+    try:
+        desired = {
+            "compact": str(compact).lower(),
+            "div_only": str(div_only).lower(),
+            "opp": opponent_q.strip(),
+            "ha": ha_opt[0].lower() if ha_opt else "any",
+        }
+        # add date range if selected
+        if isinstance(date_rng, tuple) and len(date_rng) == 2:
+            desired["start"] = str(date_rng[0])
+            desired["end"] = str(date_rng[1])
+        # Only update if any difference
+        diffs = []
+        for k, v in desired.items():
+            curv = cur_qp.get(k)
+            if isinstance(curv, list): curv = curv[0] if curv else None
+            if (curv or "") != (v or ""):
+                diffs.append(k)
+        if diffs:
+            _qparams_merge_update(**desired)
+            st.rerun()
+    except Exception:
+        pass
     
 
 
-# Filter if division-only
-if div_only and not matches.empty:
-    matches_view = matches.query("division_game == True")
+# Apply filters (division/date/opponent/H-A)
+matches_view = matches.copy()
+if div_only and not matches_view.empty and "division_game" in matches_view:
+    matches_view = matches_view.query("division_game == True")
+
+qp = _qparams_get()
+opp_filter = str(qp.get("opp",""))
+if isinstance(opp_filter, list): opp_filter = opp_filter[0]
+opp_filter = opp_filter.strip()
+if opp_filter and not matches_view.empty and "opponent" in matches_view:
+    matches_view = matches_view[matches_view["opponent"].astype(str).str.contains(opp_filter, case=False, na=False)]
+
+ha_val = str(qp.get("ha","any")).lower()
+if isinstance(ha_val, list): ha_val = ha_val[0]
+if ha_val in ("h","home","a","away") and not matches_view.empty and "home_away" in matches_view:
+    want = "H" if ha_val.startswith("h") else "A"
+    matches_view = matches_view[matches_view["home_away"].astype(str).str.upper() == want]
+
+start = qp.get("start"); end = qp.get("end")
+if isinstance(start, list): start = start[0]
+if isinstance(end, list): end = end[0]
+if start and end and not matches_view.empty and "date" in matches_view:
+    try:
+        s = pd.to_datetime(start); e = pd.to_datetime(end) + pd.Timedelta(days=1)
+        matches_view = matches_view[(matches_view["date"] >= s) & (matches_view["date"] < e)]
+    except Exception:
+        pass
+
+# Derive related views by match_id
+if not matches_view.empty and "match_id" in matches_view:
     keep = set(matches_view["match_id"].astype(str))
     events_view = events[events["match_id"].astype(str).isin(keep)] if "match_id" in events.columns else events
     plays_view  = plays_simple[plays_simple["match_id"].astype(str).isin(keep)] if not plays_simple.empty else plays_simple
     ga_view     = goals_allowed[goals_allowed["match_id"].astype(str).isin(keep)] if not goals_allowed.empty else goals_allowed
 else:
-    matches_view, events_view, plays_view, ga_view = matches, events, plays_simple, goals_allowed
+    events_view, plays_view, ga_view = events, plays_simple, goals_allowed
 
 # Drill-in param
 qp = _qparams_get()
@@ -1104,14 +1243,29 @@ if match_id:
     render_game_drilldown(match_id, matches_view, players, events_view, plays_view, summaries)
 else:
     st.header("Milton Varsity Boys Soccer Team 2025")
+
+    # Data health panel
+    with st.expander("Data Health", expanded=False):
+        c1,c2,c3,c4,c5,c6 = st.columns(6)
+        c1.metric("Matches", len(matches))
+        c2.metric("Players", len(players))
+        c3.metric("Events", len(events))
+        c4.metric("Plays", len(plays_simple))
+        c5.metric("Summaries", len(summaries))
+        c6.metric("Goals Allowed", len(goals_allowed))
+        st.caption("Sheets cached for up to 5 minutes. Use Refresh in sidebar to reload.")
+        if "cache_cleared_at" in st.session_state:
+            st.caption(f"Last manual refresh: {st.session_state['cache_cleared_at']}")
+        if st.button("Refresh now"):
+            st.cache_data.clear(); st.rerun()
+
     _team_kpis(matches_view, d2_rank=our_rank, compact=compact)
 
-    st.divider()
-    render_games_table(matches_view, compact=compact)
+    tabs = st.tabs(["Games","Trends","Leaders","Defense","Set Pieces"])
 
-    st.divider()
-    exp = st.expander("Trends (Rolling 3 Games)", expanded=False)
-    with exp:
+    with tabs[0]:
+        render_games_table(matches_view, compact=compact)
+    with tabs[1]:
         df_tr = build_trend_frame(matches_view)
         if df_tr.empty:
             st.info("No games yet to build trends.")
@@ -1131,12 +1285,9 @@ else:
                     tooltip=["Date","GF","GA","Save%","GF Conv%","GA Conv%",col]
                 ).properties(height=h)
                 st.altair_chart(ch, use_container_width=True)
-
-    st.divider()
-    render_points_leaderboard(events_view, players, top_n=5, compact=compact)
-
-    st.divider()
-    render_goals_allowed_analysis(ga_view, matches_view, players, compact=compact)
-
-    st.divider()
-    render_set_piece_analysis_from_plays(plays_view, matches_view, players)
+    with tabs[2]:
+        render_points_leaderboard(events_view, players, top_n=5, compact=compact)
+    with tabs[3]:
+        render_goals_allowed_analysis(ga_view, matches_view, players, compact=compact)
+    with tabs[4]:
+        render_set_piece_analysis_from_plays(plays_view, matches_view, players)
