@@ -931,7 +931,10 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
     if not mx.empty:
         view["opponent"] = view["match_id"].map(lambda mid: mx.at[str(mid), "opponent"] if str(mid) in mx.index else "")
         view["date"] = view["match_id"].map(lambda mid: mx.at[str(mid), "date"] if str(mid) in mx.index else "")
-        try: view["date"] = pd.to_datetime(view["date"], errors="coerce")
+        try: 
+            view["date"] = pd.to_datetime(view["date"], errors="coerce")
+            # Format date to remove time portion
+            view["date"] = view["date"].dt.strftime("%Y-%m-%d")
         except Exception: pass
     else:
         view["opponent"] = ""; view["date"] = pd.NaT
