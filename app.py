@@ -93,6 +93,7 @@ def _inject_css():
           }
           .stat-label { font-size:.85rem; color:#6b7280; margin-bottom:4px; }
           .stat-value { font-size:1.6rem; font-weight:700; line-height:1.1; }
+          .stat-sub { font-size:.8rem; color:#6b7280; margin-top:2px; }
 
           @media (max-width: 480px) {
             .block-container { padding-top: 0.75rem; padding-left: 0.6rem; padding-right: 0.6rem; }
@@ -721,10 +722,56 @@ def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n
             height=420
         )
 
+def _set_piece_type_stats(df: pd.DataFrame, sp_type: str) -> tuple[int, float]:
+    """Return (total_attempts, pct_scored) for a given set_piece type (lowercase)."""
+    if df.empty or "set_piece" not in df.columns:
+        return 0, 0.0
+    sub = df[df["set_piece"].astype(str).str.lower() == sp_type]
+    total = int(len(sub))
+    pct = float(sub["goal_created"].mean() * 100) if total > 0 and "goal_created" in sub.columns else 0.0
+    return total, pct
+
 def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame):
     st.subheader("Set-Piece Analysis")
-    tbl = set_piece_leaderboard_from_plays(plays_df)
+
+    # ---- Guard + normalize ----
+    if plays_df is None or plays_df.empty:
+        st.info("No set-play rows yet. Add data to the `plays` sheet.")
+        return
+
+    df = plays_df.copy()
+    df.columns = [c.strip().lower() for c in df.columns]
+    if "set_piece" not in df.columns:
+        df["set_piece"] = ""
+    if "goal_created" not in df.columns:
+        df["goal_created"] = False
+    df["set_piece"] = df["set_piece"].astype(str).str.lower()
+    df["goal_created"] = df["goal_created"].astype(bool)
+
+    # ---- KPI tiles (mobile-friendly card grid) ----
+    corners_total, corners_pct   = _set_piece_type_stats(df, "corner")
+    pens_total, pens_pct         = _set_piece_type_stats(df, "penalty")
+    fk_dir_total, fk_dir_pct     = _set_piece_type_stats(df, "fk_direct")
+    fk_ind_total, fk_ind_pct     = _set_piece_type_stats(df, "fk_indirect")
+
+    kpi_items = [
+        ("Corners",      corners_total,  corners_pct),
+        ("Penalties",    pens_total,     pens_pct),
+        ("Direct FK",    fk_dir_total,   fk_dir_pct),
+        ("Indirect FK",  fk_ind_total,   fk_ind_pct),
+    ]
+
+    kpi_html = "<div class='kpi-grid'>" + "".join(
+        f"<div class='stat-card'><div class='stat-label'>{name}</div><div class='stat-value'>{total}</div><div class='stat-sub'>Scored {pct:.1f}%</div></div>"
+        for (name, total, pct) in kpi_items
+    ) + "</div>"
+    st.markdown(kpi_html, unsafe_allow_html=True)
+
+    # ---- Table (unchanged) ----
+    tbl = set_piece_leaderboard_from_plays(df)
     st.dataframe(tbl, use_container_width=True, hide_index=True)
+
+    # ---- Chart (unchanged) ----
     if not tbl.empty:
         chart = alt.Chart(tbl).mark_bar().encode(
             x=alt.X("Play Call:N", sort="-y", title="Play Call"),
@@ -733,6 +780,7 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame):
             tooltip=list(tbl.columns),
         ).properties(height=280)
         st.altair_chart(chart, use_container_width=True)
+
     st.caption("Note: 'taker_id' in your sheet is free-form notes; we display it as 'taker_notes'.")
 
 def render_coach_notes_and_summary(match_id: str,
