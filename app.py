@@ -420,7 +420,7 @@ def generate_ai_game_summary(match_row: pd.Series,
         return None
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
         gf = int(match_row.get("goals_for", 0))
         ga = int(match_row.get("goals_against", 0))
@@ -475,7 +475,7 @@ def generate_ai_conceded_summary(ga_df: pd.DataFrame,
         return None
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash-lite")
 
         pl = players.set_index("player_id") if "player_id" in players.columns else pd.DataFrame()
         mx = matches.set_index("match_id") if "match_id" in matches.columns else pd.DataFrame()
@@ -512,6 +512,94 @@ def generate_ai_conceded_summary(ga_df: pd.DataFrame,
             "coach-friendly summary (120-160 words max) with 3-5 concrete actions. "
             "Focus on patterns (set pieces, late goals, specific minute windows, keeper load) and training priorities. "
             "Avoid jargon. Keep it practical.\n\n"
+            f"DATA: {context}"
+        )
+
+        resp = model.generate_content(prompt)
+        return getattr(resp, "text", "").strip() or None
+    except Exception:
+        return None
+
+# --- AI: set-piece analysis summary ---
+def generate_ai_set_piece_summary(plays_df: pd.DataFrame,
+                                  matches: pd.DataFrame,
+                                  players: pd.DataFrame) -> Optional[str]:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or genai is None:
+        return None
+    
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash-lite")
+
+        # Normalize data
+        df = plays_df.copy()
+        df.columns = [c.strip().lower() for c in df.columns]
+        if "set_piece" not in df.columns:
+            df["set_piece"] = ""
+        if "goal_created" not in df.columns:
+            df["goal_created"] = False
+        if "play_call_id" not in df.columns:
+            df["play_call_id"] = ""
+        if "taker_id" not in df.columns:
+            df["taker_id"] = ""
+        
+        df["set_piece"] = df["set_piece"].astype(str).str.lower()
+        df["goal_created"] = df["goal_created"].astype(bool)
+
+        # Get player names if available
+        pl = players.set_index("player_id") if "player_id" in players.columns else pd.DataFrame()
+        
+        # Analyze by set piece type
+        set_piece_stats = {}
+        for sp_type in ["corner", "penalty", "fk_direct", "fk_indirect"]:
+            sub = df[df["set_piece"] == sp_type]
+            if not sub.empty:
+                total = len(sub)
+                goals = sub["goal_created"].sum()
+                pct = (goals / total * 100) if total > 0 else 0.0
+                set_piece_stats[sp_type] = {
+                    "total": total,
+                    "goals": goals,
+                    "pct": pct
+                }
+
+        # Analyze by taker (if taker_id is available)
+        taker_stats = {}
+        if "taker_id" in df.columns and not df["taker_id"].isna().all():
+            for taker_id in df["taker_id"].dropna().unique():
+                if taker_id:
+                    sub = df[df["taker_id"] == taker_id]
+                    total = len(sub)
+                    goals = sub["goal_created"].sum()
+                    pct = (goals / total * 100) if total > 0 else 0.0
+                    taker_name = ""
+                    if not pl.empty and str(taker_id) in pl.index:
+                        taker_name = pl.at[str(taker_id), "name"]
+                    taker_stats[taker_id] = {
+                        "name": taker_name or str(taker_id),
+                        "total": total,
+                        "goals": goals,
+                        "pct": pct
+                    }
+
+        # Get top performers
+        top_takers = sorted(taker_stats.items(), key=lambda x: x[1]["pct"], reverse=True)[:3]
+        top_takers = [(name, data) for _, data in top_takers if data["total"] >= 2]  # Only if 2+ attempts
+
+        context = {
+            "total_set_pieces": len(df),
+            "set_piece_stats": set_piece_stats,
+            "top_takers": top_takers,
+            "total_takers": len(taker_stats)
+        }
+
+        prompt = (
+            "You are a soccer set-piece specialist analyst. Review the set-piece performance data and give a brief, "
+            "coach-friendly summary (120-160 words max) with 3-5 concrete actions. "
+            "Focus on: which set-piece types are most effective, which takers are performing best, "
+            "patterns in success rates, and specific training recommendations. "
+            "Avoid jargon. Keep it practical and actionable.\n\n"
             f"DATA: {context}"
         )
 
@@ -733,7 +821,7 @@ def _set_piece_type_stats(df: pd.DataFrame, sp_type: str) -> tuple[int, float]:
     pct = float(sub["goal_created"].mean() * 100) if total > 0 and "goal_created" in sub.columns else 0.0
     return total, pct
 
-def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame):
+def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.DataFrame, players: pd.DataFrame):
     st.subheader("Set-Piece Analysis")
 
     # ---- Guard + normalize ----
@@ -782,6 +870,15 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame):
             tooltip=list(tbl.columns),
         ).properties(height=280)
         st.altair_chart(chart, use_container_width=True)
+
+    # ---- AI Insights ----
+    if st.button("🔎 Generate AI Insights on Set-Piece Performance"):
+        ai_txt = generate_ai_set_piece_summary(plays_df, matches, players)
+        if ai_txt:
+            st.markdown("**AI Set-Piece Analysis & Recommendations**")
+            st.write(ai_txt)
+        else:
+            st.caption("AI summary unavailable (no Gemini key set or not enough context).")
 
 
 
@@ -968,6 +1065,8 @@ with st.sidebar:
         st.cache_data.clear()
         st.success("Google Sheets cache cleared.")
         st.rerun()
+    
+
 
 # Filter if division-only
 if div_only and not matches.empty:
@@ -1037,4 +1136,4 @@ else:
     render_goals_allowed_analysis(ga_view, matches_view, players, compact=compact)
 
     st.divider()
-    render_set_piece_analysis_from_plays(plays_view)
+    render_set_piece_analysis_from_plays(plays_view, matches_view, players)
