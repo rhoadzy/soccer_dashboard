@@ -1053,6 +1053,48 @@ def render_game_drilldown(match_id: str, matches: pd.DataFrame, players: pd.Data
     m = row.iloc[0]
     st.header(f"Game View – {_format_date(m.get('date',''))} vs {m.get('opponent','')} ({m.get('home_away','')})")
     st.caption(f"Division: {'Yes' if m.get('division_game', False) else 'No'} | Result: {m.get('result','')} | Score: {m.get('goals_for','')}-{m.get('goals_against','')}")
+    
+    # Display game recording URL if available
+    url = None
+    for url_col in ['url', 'recording_url', 'game_url', 'video_url', 'link']:
+        if m.get(url_col) and str(m.get(url_col)).strip():
+            url = str(m.get(url_col)).strip()
+            break
+    
+    if url:
+        # Ensure URL has proper protocol
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+            
+        st.markdown(f"""
+        <div style="
+            background: #f0f8ff; 
+            border: 1px solid #4a90e2; 
+            border-radius: 8px; 
+            padding: 12px; 
+            margin: 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        ">
+            <span style="font-size: 18px;">📹</span>
+            <div>
+                <strong style="color: #2c3e50;">Game Recording Available</strong><br>
+                <a href="{url}" target="_blank" style="color: #4a90e2; text-decoration: none; font-weight: 500;" title="Click to open game recording in a new tab">
+                    🎥 Watch Game Recording →
+                </a>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Check if any URL columns exist but are empty
+        url_columns = ['url', 'recording_url', 'game_url', 'video_url', 'link']
+        existing_url_cols = [col for col in url_columns if col in m.index]
+        
+        if existing_url_cols:
+            st.info("📹 No game recording available for this match.")
+        else:
+            st.info("📹 No game recording available for this match.")
 
     by_player = (events.query("match_id == @match_id").copy()
                  if "match_id" in events.columns else pd.DataFrame())
