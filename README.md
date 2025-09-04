@@ -25,6 +25,7 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 ### 🎮 **Game Drill-Down**
 - **Individual Match Analysis**: Detailed game-by-game breakdowns
 - **Player Performance**: Per-player statistics and contributions
+- **Game Recording Links**: Direct access to recorded game videos
 - **Coach Notes Integration**: Game-specific coaching insights
 - **AI Game Summaries**: Automated match recaps and takeaways
 
@@ -66,7 +67,7 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 4. **Set up Google Sheets**
    
    Your Google Sheet should have these tabs:
-   - **matches**: Game results and statistics
+   - **matches**: Game results and statistics (include optional 'url' column for game recordings)
    - **players**: Team roster information
    - **events**: Individual player performance
    - **plays**: Set-piece attempts and results
@@ -94,6 +95,7 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 | saves | integer | Goalkeeper saves |
 | result | string | W/L/D for win/loss/draw |
 | division_game | boolean | Division game flag |
+| url | string | Game recording URL (optional) |
 
 ### Plays Tab (Set-Pieces)
 | Column | Type | Description |
@@ -169,6 +171,14 @@ streamlit run app.py
 - **Set-Pieces**: Corner kicks, free kicks, penalties analysis
 - **Defense**: Goals allowed and defensive patterns
 - **Individual Games**: Click any game for detailed analysis
+- **Game Recordings**: Access recorded game videos directly from game view
+
+### Game Recording Integration
+- **Automatic Detection**: Supports multiple URL column names (url, recording_url, game_url, video_url, link)
+- **Smart Display**: Shows recording link with styled blue info box when available
+- **Protocol Handling**: Automatically adds https:// if missing from URLs
+- **User-Friendly**: Clean "No recording available" message when no URL is present
+- **New Tab Opening**: Recording links open in new tab for better user experience
 
 ### AI Features
 - Click "🔎 Generate AI Insights" buttons for automated analysis
