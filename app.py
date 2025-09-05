@@ -107,6 +107,37 @@ def _inject_css():
             .block-container { padding: 0 !important; }
             a.tiny-open { display: none !important; }
           }
+
+          /* ----- AI Chat Styling ----- */
+          .ai-chat-message {
+            background: #f8f9fa;
+            border-left: 4px solid #4a90e2;
+            padding: 12px 16px;
+            margin: 8px 0;
+            border-radius: 0 8px 8px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+          }
+          .ai-chat-user {
+            background: #e3f2fd;
+            border-left-color: #2196f3;
+          }
+          .ai-chat-assistant {
+            background: #f3e5f5;
+            border-left-color: #9c27b0;
+          }
+          .ai-quick-action {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+          }
+          .ai-quick-action:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          }
         </style>
         """,
         unsafe_allow_html=True,
@@ -121,7 +152,7 @@ def require_app_password():
     if "authed" not in st.session_state:
         st.session_state.authed = False
     if not st.session_state.authed:
-        st.title("🔒 Coaches Only")
+        st.title("Coaches Only")
         entered = st.text_input("Enter password", type="password")
         if st.button("Enter"):
             st.session_state.authed = (entered == pwd)
@@ -438,6 +469,88 @@ def build_trend_frame(matches: pd.DataFrame) -> pd.DataFrame:
     df["Date"] = df["date"]
     return df
 
+def build_comparison_trend_frame(matches: pd.DataFrame) -> pd.DataFrame:
+    """Build a comparison frame showing all games vs last 3 games metrics."""
+    if matches.empty:
+        return pd.DataFrame()
+    
+    df = matches.sort_values("date").copy()
+    df["GF"] = df.get("goals_for", 0)
+    df["GA"] = df.get("goals_against", 0)
+
+    sv  = df.get("saves", pd.Series([0]*len(df)))
+    shf = df.get("shots_for", pd.Series([0]*len(df)))
+    sha = df.get("shots_against", pd.Series([0]*len(df)))
+
+    denom_sv = sv + df["GA"]
+    df["Save%"] = (sv / denom_sv * 100).where(denom_sv > 0, 0.0)
+    df["GF Conv%"] = (df["GF"] / shf * 100).where(shf > 0, 0.0)
+    df["GA Conv%"] = (df["GA"] / sha * 100).where(sha > 0, 0.0)
+
+    # Calculate season averages (all games)
+    season_avg = {
+        "GF": df["GF"].mean(),
+        "GA": df["GA"].mean(),
+        "Save%": df["Save%"].mean(),
+        "GF Conv%": df["GF Conv%"].mean(),
+        "GA Conv%": df["GA Conv%"].mean()
+    }
+
+    # Calculate last 3 games averages
+    last_3_avg = {}
+    if len(df) >= 3:
+        last_3 = df.tail(3)
+        last_3_avg = {
+            "GF": last_3["GF"].mean(),
+            "GA": last_3["GA"].mean(),
+            "Save%": last_3["Save%"].mean(),
+            "GF Conv%": last_3["GF Conv%"].mean(),
+            "GA Conv%": last_3["GA Conv%"].mean()
+        }
+    else:
+        # If less than 3 games, use all available games
+        last_3_avg = season_avg.copy()
+
+    # Create comparison data
+    comparison_data = []
+    for metric in ["GF", "GA", "Save%", "GF Conv%", "GA Conv%"]:
+        comparison_data.append({
+            "Metric": metric,
+            "All Games": season_avg[metric],
+            "Last 3 Games": last_3_avg[metric],
+            "Difference": last_3_avg[metric] - season_avg[metric]
+        })
+
+    return pd.DataFrame(comparison_data)
+
+def build_individual_game_trends(matches: pd.DataFrame) -> pd.DataFrame:
+    """Build individual game data points for trend analysis."""
+    if matches.empty:
+        return pd.DataFrame()
+    
+    df = matches.sort_values("date").copy()
+    df["GF"] = df.get("goals_for", 0)
+    df["GA"] = df.get("goals_against", 0)
+
+    sv  = df.get("saves", pd.Series([0]*len(df)))
+    shf = df.get("shots_for", pd.Series([0]*len(df)))
+    sha = df.get("shots_against", pd.Series([0]*len(df)))
+
+    denom_sv = sv + df["GA"]
+    df["Save%"] = (sv / denom_sv * 100).where(denom_sv > 0, 0.0)
+    df["GF Conv%"] = (df["GF"] / shf * 100).where(shf > 0, 0.0)
+    df["GA Conv%"] = (df["GA"] / sha * 100).where(sha > 0, 0.0)
+
+    # Add game number and opponent info
+    df["Game #"] = range(1, len(df) + 1)
+    df["Opponent"] = df.get("opponent", "")
+    df["Date"] = df["date"]
+    
+    # Mark last 3 games
+    df["Last 3 Games"] = df.index >= (len(df) - 3)
+    
+    return df[["Game #", "Date", "Opponent", "GF", "GA", "Save%", "GF Conv%", "GA Conv%", "Last 3 Games"]]
+
 # --- AI: match summary ---
 def generate_ai_game_summary(match_row: pd.Series,
                              notes_row: Optional[pd.Series],
@@ -547,6 +660,359 @@ def generate_ai_conceded_summary(ga_df: pd.DataFrame,
     except Exception:
         return None
 
+# --- AI: General team analysis and Q&A ---
+def generate_ai_team_analysis(query: str,
+                             matches: pd.DataFrame,
+                             players: pd.DataFrame,
+                             events: pd.DataFrame,
+                             plays_df: pd.DataFrame,
+                             goals_allowed: pd.DataFrame) -> Optional[str]:
+    """Generate AI analysis based on user query about team performance."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or genai is None:
+        return None
+    
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash-lite")
+
+        # Prepare comprehensive team data
+        # Build top scorers with player names, not IDs
+        top_scorers = []
+        if not events.empty:
+            ev_norm = events.copy()
+            ev_norm.columns = [c.strip().lower() for c in ev_norm.columns]
+            if "assist" in ev_norm.columns and "assists" not in ev_norm.columns:
+                ev_norm = ev_norm.rename(columns={"assist": "assists"})
+            agg = ev_norm.groupby("player_id", as_index=False)[[c for c in ["goals","assists"] if c in ev_norm.columns]].sum()
+            # map names
+            pl_map = {}
+            if not players.empty and "player_id" in players.columns and "name" in players.columns:
+                tmp = players[["player_id","name"]].copy()
+                tmp["player_id"] = tmp["player_id"].astype(str)
+                pl_map = dict(zip(tmp["player_id"], tmp["name"].astype(str)))
+            agg["name"] = agg["player_id"].astype(str).map(pl_map).fillna(agg["player_id"].astype(str))
+            top_scorers = agg.sort_values("goals", ascending=False).head(5)[["name","goals","assists"]].to_dict("records")
+
+        team_data = {
+            "matches": {
+                "total_games": len(matches),
+                "record": _team_record_text(matches),
+                "goals_for": int(matches.get("goals_for", pd.Series(dtype=int)).sum()) if not matches.empty else 0,
+                "goals_against": int(matches.get("goals_against", pd.Series(dtype=int)).sum()) if not matches.empty else 0,
+                "shots_for": int(matches.get("shots_for", pd.Series(dtype=int)).sum()) if not matches.empty else 0,
+                "shots_against": int(matches.get("shots_against", pd.Series(dtype=int)).sum()) if not matches.empty else 0,
+                "saves": int(matches.get("saves", pd.Series(dtype=int)).sum()) if not matches.empty else 0,
+                "recent_games": matches.tail(3)[["date", "opponent", "goals_for", "goals_against", "result"]].to_dict("records") if len(matches) >= 3 else []
+            },
+            "players": {
+                "total_players": len(players),
+                "top_scorers": top_scorers
+            },
+            "events": {
+                "total_goals": int(events.get("goals", pd.Series(dtype=int)).sum()) if not events.empty else 0,
+                "total_assists": int(events.get("assists", pd.Series(dtype=int)).sum()) if not events.empty else 0,
+                "total_shots": int(events.get("shots", pd.Series(dtype=int)).sum()) if not events.empty else 0
+            },
+            "goals_allowed": {
+                "total_conceded": len(goals_allowed),
+                "by_situation": goals_allowed["situation"].value_counts().to_dict() if not goals_allowed.empty else {},
+                "by_minute": goals_allowed["minute"].apply(_minute_bucket).value_counts().to_dict() if not goals_allowed.empty else {}
+            },
+            "set_pieces": {
+                "total_attempts": len(plays_df),
+                "goals_created": int(plays_df.get("goal_created", pd.Series(dtype=bool)).sum()) if not plays_df.empty else 0,
+                "by_type": plays_df["set_piece"].value_counts().to_dict() if not plays_df.empty else {}
+            }
+        }
+
+        system_prompt = (
+            "You are an expert soccer analyst and assistant coach. Analyze the provided team data and answer the user's question "
+            "with specific insights, statistics, and actionable recommendations. Be concise but thorough. "
+            "Focus on patterns, trends, strengths, weaknesses, and coaching implications. "
+            "Use specific numbers and examples from the data when relevant."
+        )
+
+        user_prompt = f"""
+        USER QUESTION: {query}
+
+        TEAM DATA:
+        {team_data}
+
+        Please provide a comprehensive analysis addressing the user's question with specific insights from the data.
+        """
+
+        resp = model.generate_content([system_prompt, user_prompt])
+        return getattr(resp, "text", "").strip() or None
+    except Exception:
+        return None
+
+def get_next_opponent_from_schedule() -> Optional[Dict[str, str]]:
+    """Return next opponent using the Google Sheet schedule when possible.
+
+    Falls back to SB Live scraping only if the sheet is unavailable.
+    """
+    # 1) Prefer local sheet data loaded into `matches`
+    try:
+        df = globals().get("matches")
+        if df is not None and isinstance(df, pd.DataFrame) and not df.empty and "date" in df.columns:
+            df2 = df.copy()
+            df2["date"] = pd.to_datetime(df2["date"], errors="coerce")
+            today = pd.Timestamp.now().normalize()
+
+            # Consider upcoming = today or future; optionally also where result is missing
+            upcoming = df2[df2["date"] >= today].sort_values("date")
+            if not upcoming.empty:
+                row = upcoming.iloc[0]
+                return {
+                    "opponent": str(row.get("opponent", "Unknown")),
+                    "date": str(row.get("date", "")),
+                    "source": "Sheet",
+                }
+    except Exception:
+        pass
+
+    # 2) Fallback to SB Live simple parse
+    try:
+        html = fetch_html(SI_SCHEDULE_URL)
+        text = _clean_text(html)
+        lines = text.split('\n')
+        for line in lines:
+            if 'milton' in line.lower() and any(month in line.lower() for month in ['oct', 'nov', 'dec', 'jan', 'feb', 'mar', 'apr', 'may']):
+                parts = line.split()
+                for i, part in enumerate(parts):
+                    if 'milton' in part.lower() and i < len(parts) - 1:
+                        opponent = parts[i + 1] if i + 1 < len(parts) else "Unknown"
+                        return {"opponent": opponent, "date": "Upcoming", "source": "SB Live"}
+        return None
+    except Exception:
+        return None
+
+def analyze_opponent_from_data(opponent_name: str, matches: pd.DataFrame) -> Dict[str, any]:
+    """Analyze opponent based on historical match data."""
+    if matches.empty or not opponent_name:
+        return {}
+    
+    # Find matches against this opponent
+    opponent_matches = matches[matches["opponent"].str.contains(opponent_name, case=False, na=False)]
+    
+    if opponent_matches.empty:
+        return {"found": False, "message": f"No historical data found for {opponent_name}"}
+    
+    analysis = {
+        "found": True,
+        "total_meetings": len(opponent_matches),
+        "wins": int((opponent_matches["result"] == "W").sum()),
+        "losses": int((opponent_matches["result"] == "L").sum()),
+        "draws": int((opponent_matches["result"] == "D").sum()),
+        "avg_goals_for": float(opponent_matches["goals_for"].mean()),
+        "avg_goals_against": float(opponent_matches["goals_against"].mean()),
+        "recent_results": opponent_matches.tail(3)[["date", "result", "goals_for", "goals_against"]].to_dict("records")
+    }
+    
+    return analysis
+
+def _extract_links_with_text(html: str) -> list[tuple[str,str]]:
+    """Very light HTML anchor extraction: returns list of (href, text)."""
+    pairs = []
+    try:
+        # Match <a ... href="...">Text</a>
+        for m in re.finditer(r"<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", html, flags=re.I|re.S):
+            href = m.group(1)
+            text = re.sub(r"<[^>]+>", " ", m.group(2))
+            text = re.sub(r"\s+", " ", text).strip()
+            pairs.append((href, text))
+    except Exception:
+        pass
+    return pairs
+
+def find_opponent_slug_from_our_schedule(opponent_name: str) -> Optional[str]:
+    """Try to find the SI team slug for an opponent by scanning our SI schedule page for a link to that team."""
+    try:
+        html = fetch_html(SI_SCHEDULE_URL)
+        links = _extract_links_with_text(html)
+        target = opponent_name.lower().strip()
+        for href, text in links:
+            if target in text.lower() and "/soccer/teams/" in href and href.endswith("/games"):
+                # href may be absolute or relative; take the slug portion
+                m = re.search(r"/soccer/teams/([^/]+)/games", href)
+                if m:
+                    return m.group(1)
+    except Exception:
+        return None
+    return None
+
+def scrape_team_schedule_stats(team_slug: str) -> Optional[Dict[str, any]]:
+    """Fetch an SI team schedule page and derive rough W-L-D, GF, GA and list of opponents.
+    This is a best-effort text parse; if it fails, returns None.
+    """
+    try:
+        url = f"{SI_BASE}/soccer/teams/{team_slug}/games"
+        html = fetch_html(url)
+        text = _clean_text(html)
+
+        # Attempt to extract per-game lines containing a score like "2 - 1" and an opponent name
+        games = []
+        for m in re.finditer(r"([A-Za-z0-9.\-\' ]{3,})\s+(\d+)\s*[-–]\s*(\d+)", text):
+            opp = m.group(1).strip()
+            gf = int(m.group(2))
+            ga = int(m.group(3))
+            games.append({"opponent": opp, "gf": gf, "ga": ga})
+
+        if not games:
+            return None
+
+        wins = sum(1 for g in games if g["gf"] > g["ga"]) 
+        losses = sum(1 for g in games if g["gf"] < g["ga"]) 
+        draws = sum(1 for g in games if g["gf"] == g["ga"]) 
+        gf_total = sum(g["gf"] for g in games)
+        ga_total = sum(g["ga"] for g in games)
+
+        return {
+            "wins": wins,
+            "losses": losses,
+            "draws": draws,
+            "goals_for": gf_total,
+            "goals_against": ga_total,
+            "games": games,
+        }
+    except Exception:
+        return None
+
+def summarize_vs_common_opponents(opponent_stats: Dict[str, any], our_matches: pd.DataFrame) -> Dict[str, any]:
+    """Compute opponent's record vs teams we have on our schedule (common opponents), using scraped opponent games.
+    Returns dict with list of common opponents and opponent W-L-D and GF/GA vs those opponents.
+    """
+    out = {"common": [], "wins": 0, "losses": 0, "draws": 0, "gf": 0, "ga": 0}
+    try:
+        if not opponent_stats or our_matches is None or our_matches.empty:
+            return out
+        our_opps = set(our_matches.get("opponent", pd.Series(dtype=str)).astype(str).str.strip().str.lower().unique())
+        common_games = [g for g in opponent_stats.get("games", []) if str(g.get("opponent"," ")).strip().lower() in our_opps]
+        if not common_games:
+            return out
+        out["common"] = common_games
+        out["wins"] = sum(1 for g in common_games if g["gf"] > g["ga"]) 
+        out["losses"] = sum(1 for g in common_games if g["gf"] < g["ga"]) 
+        out["draws"] = sum(1 for g in common_games if g["gf"] == g["ga"]) 
+        out["gf"] = sum(g["gf"] for g in common_games)
+        out["ga"] = sum(g["ga"] for g in common_games)
+        return out
+    except Exception:
+        return out
+
+def predict_vs_opponent(matches: pd.DataFrame, opponent_name: str) -> Dict[str, float]:
+    """Simple prediction using available data only (our schedule):
+    - Head-to-head averages vs opponent (if any)
+    - Season averages
+    - Recent 3 games averages
+    Returns suggested expected GF/GA.
+    """
+    out = {"gf_pred": 0.0, "ga_pred": 0.0}
+    if matches.empty:
+        return out
+
+    df = matches.copy().sort_values("date")
+    df["GF"] = df.get("goals_for", 0)
+    df["GA"] = df.get("goals_against", 0)
+
+    # Season averages
+    season_gf = float(df["GF"].mean()) if len(df) else 0.0
+    season_ga = float(df["GA"].mean()) if len(df) else 0.0
+
+    # Recent form (last 3)
+    recent = df.tail(3)
+    recent_gf = float(recent["GF"].mean()) if len(recent) else season_gf
+    recent_ga = float(recent["GA"].mean()) if len(recent) else season_ga
+
+    # Head-to-head
+    h2h = df[df["opponent"].astype(str).str.contains(opponent_name, case=False, na=False)]
+    h2h_gf = float(h2h["GF"].mean()) if not h2h.empty else None
+    h2h_ga = float(h2h["GA"].mean()) if not h2h.empty else None
+
+    # Blend: if H2H exists, 60% H2H, 40% split between season/recent; else 50/50 season/recent
+    if h2h_gf is not None and h2h_ga is not None:
+        gf_pred = 0.6 * h2h_gf + 0.2 * season_gf + 0.2 * recent_gf
+        ga_pred = 0.6 * h2h_ga + 0.2 * season_ga + 0.2 * recent_ga
+    else:
+        gf_pred = 0.5 * season_gf + 0.5 * recent_gf
+        ga_pred = 0.5 * season_ga + 0.5 * recent_ga
+
+    out.update({
+        "gf_pred": round(gf_pred, 2),
+        "ga_pred": round(ga_pred, 2),
+        "season_gf": round(season_gf, 2),
+        "season_ga": round(season_ga, 2),
+        "recent_gf": round(recent_gf, 2),
+        "recent_ga": round(recent_ga, 2),
+        "h2h_gf": round(h2h_gf, 2) if h2h_gf is not None else None,
+        "h2h_ga": round(h2h_ga, 2) if h2h_ga is not None else None,
+        "h2h_games": int(len(h2h)),
+    })
+    return out
+
+def generate_ai_opponent_analysis(opponent_name: str,
+                                 matches: pd.DataFrame,
+                                 next_opponent_data: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """Generate AI analysis of upcoming opponent."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key or genai is None:
+        return None
+    
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash-lite")
+
+        # Get historical data about opponent + simple prediction
+        opponent_analysis = analyze_opponent_from_data(opponent_name, matches)
+        prediction = predict_vs_opponent(matches, opponent_name)
+
+        # Try to enrich with scraped opponent season and common-opponent stats
+        opponent_slug = find_opponent_slug_from_our_schedule(opponent_name)
+        opponent_stats = scrape_team_schedule_stats(opponent_slug) if opponent_slug else None
+        common_vs = summarize_vs_common_opponents(opponent_stats, matches) if opponent_stats else {}
+        
+        # Get next opponent info
+        if not next_opponent_data:
+            next_opponent_data = get_next_opponent_from_schedule()
+
+        system_prompt = (
+            "You are an expert soccer analyst preparing a scouting report. Analyze the opponent data and provide "
+            "strategic insights, key matchups, and tactical recommendations. Be specific and actionable."
+        )
+
+        context = {
+            "opponent_name": opponent_name,
+            "historical_data": opponent_analysis,
+            "next_opponent_info": next_opponent_data,
+            "team_record": _team_record_text(matches),
+            "recent_form": matches.tail(3)[["opponent", "result", "goals_for", "goals_against"]].to_dict("records") if len(matches) >= 3 else [],
+            "prediction": prediction,
+            "opponent_stats": opponent_stats or {},
+            "vs_common_opponents": common_vs or {}
+        }
+
+        user_prompt = f"""
+        OPPONENT ANALYSIS REQUEST: {opponent_name}
+
+        CONTEXT:
+        {context}
+
+        Provide a comprehensive opponent analysis including:
+        1. Historical matchup summary
+        2. Key tactical insights
+        3. Strengths and weaknesses to exploit
+        4. Recommended game plan
+        5. Key players to watch (if available)
+        6. Compare the opponent's overall and vs-common-opponents W-L-D and GF/GA to our season and recent form.
+        7. Use the provided season/recent/head-to-head metrics and the simple prediction to give a likely score range and preparation focus.
+        """
+
+        resp = model.generate_content([system_prompt, user_prompt])
+        return getattr(resp, "text", "").strip() or None
+    except Exception:
+        return None
+
 # --- AI: set-piece analysis summary ---
 def generate_ai_set_piece_summary(plays_df: pd.DataFrame,
                                   matches: pd.DataFrame,
@@ -612,7 +1078,7 @@ def generate_ai_set_piece_summary(plays_df: pd.DataFrame,
 
         # Get top performers
         top_takers = sorted(taker_stats.items(), key=lambda x: x[1]["pct"], reverse=True)[:3]
-        top_takers = [(name, data) for _, data in top_takers if data["total"] >= 2]  # Only if 2+ attempts
+        top_takers = [(data["name"], data) for _, data in top_takers if data["total"] >= 2]  # Only if 2+ attempts
 
         context = {
             "total_set_pieces": len(df),
@@ -736,7 +1202,7 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
                 </div>
                 <div class="gc-meta">
                   {ha_html}{div_html}
-                  <span class="tiny-open">↗ Open</span>
+                  <span class="tiny-open">Open</span>
                 </div>
               </div>
             </a>
@@ -755,17 +1221,17 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
         mid = str(r.get("match_id","") or f"row{idx}")
         cols[3].markdown(f"<a href='?match_id={mid}' style='text-decoration:none'>{_color_opp(r.get('opponent',''), r.get('result',''))}</a>", unsafe_allow_html=True)
         cols[4].write(r.get("home_away",""))
-        cols[5].write("✅" if r.get("division_game", False) else "–")
+        cols[5].write("Yes" if r.get("division_game", False) else "No")
         cols[6].write(r.get("GF-GA",""))
         cols[7].write(r.get("shots_for", r.get("shots","")))
         cols[8].write(r.get("saves",""))
-        cols[9].markdown(f"<a class='tiny-open' href='?match_id={mid}' title='Open game'>↗</a>", unsafe_allow_html=True)
+        cols[9].markdown(f"<a class='tiny-open' href='?match_id={mid}' title='Open game'>Open</a>", unsafe_allow_html=True)
 
     # CSV download of games
     try:
         export_cols = [c for c in ["date","match_id","opponent","home_away","division_game","GF-GA","shots_for","saves"] if c in view.columns]
         csv = view[export_cols].to_csv(index=False).encode('utf-8')
-        st.download_button("⬇ Download games (CSV)", data=csv, file_name="games.csv", mime="text/csv")
+        st.download_button("Download games (CSV)", data=csv, file_name="games.csv", mime="text/csv")
     except Exception:
         pass
 
@@ -798,7 +1264,7 @@ def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n
              .sort_values(["points","goals","assists","jersey"], ascending=[False,False,False,True])
 
     def _medal(i: int) -> str:
-        return "🥇" if i == 0 else ("🥈" if i == 1 else ("🥉" if i == 2 else ""))
+        return "1" if i == 0 else ("2" if i == 1 else ("3" if i == 2 else ""))
     top = full.head(top_n if top_n and top_n > 0 else 5).copy()
     top.insert(0, "", [ _medal(i) for i in range(len(top)) ])  # blank header for medal col
 
@@ -853,7 +1319,7 @@ def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n
         )
         try:
             csv = full[cols_full].to_csv(index=False).encode('utf-8')
-            st.download_button("⬇ Download leaderboard (CSV)", data=csv, file_name="leaderboard.csv", mime="text/csv")
+            st.download_button("Download leaderboard (CSV)", data=csv, file_name="leaderboard.csv", mime="text/csv")
         except Exception:
             pass
 
@@ -917,7 +1383,7 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
         st.altair_chart(chart, use_container_width=True)
 
     # ---- AI Insights ----
-    if st.button("🔎 Generate AI Insights on Set-Piece Performance"):
+    if st.button("Generate AI Insights on Set-Piece Performance"):
         ai_txt = generate_ai_set_piece_summary(plays_df, matches, players)
         if ai_txt:
             st.markdown("**AI Set-Piece Analysis & Recommendations**")
@@ -992,7 +1458,7 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
     # CSV download for goals allowed table
     try:
         csv = view[cols_show].to_csv(index=False).encode('utf-8')
-        st.download_button("⬇ Download goals allowed (CSV)", data=csv, file_name="goals_allowed.csv", mime="text/csv")
+        st.download_button("Download goals allowed (CSV)", data=csv, file_name="goals_allowed.csv", mime="text/csv")
     except Exception:
         pass
 
@@ -1035,7 +1501,7 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
     st.altair_chart(chart_sit | chart_min, use_container_width=True)
     st.altair_chart(chart_gk, use_container_width=True)
 
-    if st.button("🔎 Generate AI Insights on Conceded Goals"):
+    if st.button("Generate AI Insights on Conceded Goals"):
         ai_txt = generate_ai_conceded_summary(view, matches, players)
         if ai_txt:
             st.markdown("**AI Defensive Summary & Recommendations**")
@@ -1142,10 +1608,11 @@ plays_simple = load_plays_simple()
 summaries = load_summaries()
 goals_allowed = load_goals_allowed()
 
-# Sidebar
+
+# Sidebar (clean labels)
 with st.sidebar:
     st.title("HS Soccer")
-    if st.button("🏠 Dashboard (Home)"):
+    if st.button("Dashboard (Home)"):
         _qparams_set(); st.rerun()
 
     # Read qp for initial toggle values
@@ -1154,7 +1621,7 @@ with st.sidebar:
     compact_init = _qp_bool(qp_init.get("compact"), COMPACT_DEFAULT)
     div_only_init = _qp_bool(qp_init.get("div_only"), False)
 
-    compact = st.toggle("📱 Compact mode", value=compact_init, help="Phone-friendly layout")
+    compact = st.toggle("Compact mode", value=compact_init, help="Phone-friendly layout")
     div_only = st.checkbox("Division games only", value=div_only_init)
 
     # Global filters
@@ -1162,13 +1629,8 @@ with st.sidebar:
     opponent_q = st.text_input("Opponent contains", value=str(qp_init.get("opp","")))
     ha_opt = st.selectbox("Home/Away", ["Any","Home","Away"], index={"any":0,"home":1,"away":2}.get(str(qp_init.get("ha","any")).lower(),0))
 
-
-    st.link_button("📅 Open Schedule", SI_SCHEDULE_URL)
-    st.link_button("🏆 Open Rankings (D2)", SI_RANKINGS_URL)
-
-
-
-
+    st.link_button("Open Schedule", SI_SCHEDULE_URL)
+    st.link_button("Open Rankings (D2)", SI_RANKINGS_URL)
 
     # Sync toggles/filters to query params only when they differ
     try:
@@ -1182,7 +1644,7 @@ with st.sidebar:
         # Only update if any difference
         diffs = []
         for k, v in desired.items():
-            curv = cur_qp.get(k)
+            curv = qp_init.get(k)
             if isinstance(curv, list): curv = curv[0] if curv else None
             if (curv or "") != (v or ""):
                 diffs.append(k)
@@ -1191,8 +1653,6 @@ with st.sidebar:
             st.rerun()
     except Exception:
         pass
-    
-
 
 # Apply filters (division/date/opponent/H-A)
 matches_view = matches.copy()
@@ -1264,30 +1724,168 @@ else:
 
     _team_kpis(matches_view, d2_rank=our_rank, compact=compact)
 
+
     tabs = st.tabs(["Games","Trends","Leaders","Goals Allowed","Set Pieces"])
 
     with tabs[0]:
         render_games_table(matches_view, compact=compact)
+        # Place AI Chat Assistant under the game schedule
+        st.divider()
+        st.subheader("AI Assistant")
+        st.caption("Ask questions about team performance and season trends")
+
+        # (Removed next opponent preview; AI limited to known sheet data)
+
+        # Initialize chat history in session state
+        if "ai_chat_history" not in st.session_state:
+            st.session_state.ai_chat_history = []
+
+        # Display chat history
+        chat_container = st.container()
+        with chat_container:
+            for message in st.session_state.ai_chat_history:
+                if message["role"] == "user":
+                    st.markdown(f"""
+                    <div class='ai-chat-message ai-chat-user'>
+                        <strong>You:</strong> {message['content']}
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div class='ai-chat-message ai-chat-assistant'>
+                        <strong>AI:</strong> {message['content']}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+        # Chat input
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            user_input = st.text_input(
+                "Ask a question about the team:",
+                placeholder="e.g., 'Analyze our next opponent' or 'Summarize our season performance'",
+                key="ai_chat_input_games",
+            )
+        with c2:
+            send_button = st.button("Send", type="primary")
+
+        # Quick action buttons (known data only)
+        st.markdown("**Quick Actions:**")
+        q2, q3 = st.columns(2)
+        with q2:
+            if st.button("Season Summary", help="Get a comprehensive overview of your season"):
+                user_input = (
+                    "Provide a comprehensive summary of our season performance including strengths, "
+                    "weaknesses, and key insights"
+                )
+                send_button = True
+        with q3:
+            if st.button("Performance Trends", help="Analyze trends and identify improvement areas"):
+                user_input = "Analyze our performance trends and identify areas for improvement"
+                send_button = True
+
+        # Process user input
+        if send_button and user_input and user_input.strip():
+            # Add user message to history
+            st.session_state.ai_chat_history.append({"role": "user", "content": user_input})
+
+            # Show loading spinner
+            with st.spinner("AI is analyzing..."):
+                # Known-data analysis only
+                ai_response = generate_ai_team_analysis(
+                    user_input,
+                    matches_view,
+                    players,
+                    events_view,
+                    plays_view,
+                    ga_view,
+                )
+
+            # Add AI response to history
+            if ai_response:
+                st.session_state.ai_chat_history.append({"role": "assistant", "content": ai_response})
+            else:
+                st.session_state.ai_chat_history.append({
+                    "role": "assistant",
+                    "content": (
+                        "I'm sorry, I couldn't generate a response. "
+                        "Please make sure you have a Gemini API key configured and try again."
+                    ),
+                })
+
+            # Clear input and rerun to show new message
+            st.rerun()
+
+        # Clear chat button
+        if st.button("Clear Chat History"):
+            st.session_state.ai_chat_history = []
+            st.rerun()
     with tabs[1]:
-        df_tr = build_trend_frame(matches_view)
-        if df_tr.empty:
+        if matches_view.empty:
             st.info("No games yet to build trends.")
         else:
+            # Comparison between all games vs last 3 games
+            comparison_df = build_comparison_trend_frame(matches_view)
+            individual_df = build_individual_game_trends(matches_view)
+            
+            st.subheader("All Games vs Last 3 Games Comparison")
+            
+            # Display comparison table
+            st.dataframe(
+                comparison_df.round(2),
+                use_container_width=True,
+                hide_index=True,
+                height=200
+            )
+            
+            # Create comparison charts
             label_axis = alt.Axis(labelAngle=-45) if compact else alt.Axis()
             h = 220
+            
+            # Melt the comparison data for better charting
+            comparison_melted = comparison_df.melt(
+                id_vars=["Metric"],
+                value_vars=["All Games", "Last 3 Games"],
+                var_name="Period",
+                value_name="Value"
+            )
+            
+            # Comparison bar chart
+            comparison_chart = alt.Chart(comparison_melted).mark_bar().encode(
+                x=alt.X("Metric:N", title="Metric", axis=label_axis),
+                y=alt.Y("Value:Q", title="Value"),
+                color=alt.Color("Period:N", title="Period"),
+                tooltip=["Metric", "Period", "Value"]
+            ).properties(height=h)
+            st.altair_chart(comparison_chart, use_container_width=True)
+            
+            st.subheader("Individual Game Performance")
+            
+            # Individual game trends
             for col, title in [
-                ("R3 GF","Goals For (R3)"),
-                ("R3 GA","Goals Against (R3)"),
-                ("R3 Save%","Save% (R3)"),
-                ("R3 GF Conv%","Conv% (For) (R3)"),
-                ("R3 GA Conv%","Conv% (Agst) (R3)")
+                ("GF", "Goals For"),
+                ("GA", "Goals Against"),
+                ("Save%", "Save %"),
+                ("GF Conv%", "Conversion % (For)"),
+                ("GA Conv%", "Conversion % (Against)")
             ]:
-                ch = alt.Chart(df_tr).mark_line(point=True).encode(
-                    x=alt.X("Date:T", title="Date", axis=label_axis),
+                # Create chart with different colors for last 3 games
+                chart = alt.Chart(individual_df).mark_circle(size=60).encode(
+                    x=alt.X("Game #:O", title="Game Number"),
                     y=alt.Y(f"{col}:Q", title=title),
-                    tooltip=["Date","GF","GA","Save%","GF Conv%","GA Conv%",col]
+                    color=alt.Color("Last 3 Games:N", 
+                                  scale=alt.Scale(domain=[True, False], range=["#ff6b6b", "#4ecdc4"]),
+                                  title="Last 3 Games"),
+                    tooltip=["Game #", "Date", "Opponent", col, "Last 3 Games"]
                 ).properties(height=h)
-                st.altair_chart(ch, use_container_width=True)
+                
+                # Add trend line
+                trend_line = alt.Chart(individual_df).mark_line(color="gray", opacity=0.5).encode(
+                    x=alt.X("Game #:O"),
+                    y=alt.Y(f"{col}:Q")
+                ).properties(height=h)
+                
+                final_chart = (chart + trend_line).resolve_scale(color="independent")
+                st.altair_chart(final_chart, use_container_width=True)
     with tabs[2]:
         render_points_leaderboard(events_view, players, top_n=5, compact=compact)
     with tabs[3]:
