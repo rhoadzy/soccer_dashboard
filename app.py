@@ -1762,7 +1762,7 @@ else:
         with c1:
             user_input = st.text_input(
                 "Ask a question about the team:",
-                placeholder="e.g., 'Analyze our next opponent' or 'Summarize our season performance'",
+                placeholder="e.g., 'Summarize our season performance'",
                 key="ai_chat_input_games",
             )
         with c2:
