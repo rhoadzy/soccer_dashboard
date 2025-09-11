@@ -465,8 +465,9 @@ def set_piece_leaderboard_from_plays(plays_df: pd.DataFrame) -> pd.DataFrame:
     grp["Goal%"] = (grp["goal_rate"] * 100).round(1)
 
     out = grp.rename(columns={"play_call_id": "Play Call"})
+    # Sort primarily by attempts (desc) to surface most-used plays
     return out[["set_piece", "Play Call", "play_type", "attempts", "Goal%"]].sort_values(
-        ["Goal%", "attempts", "Play Call"], ascending=[False, False, True]
+        ["attempts", "Goal%", "Play Call"], ascending=[False, False, True]
     )
 
 def build_trend_frame(matches: pd.DataFrame) -> pd.DataFrame:
@@ -1419,7 +1420,7 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
             f"<div class='stat-card'>"
             f"<div class='stat-label'>{label}</div>"
             f"<div class='stat-value'>{sz_total}</div>"
-            f"<div class='stat-sub'>Season: {sz_goals}/{sz_total} ({sz_pct:.1f}%)</div>"
+            f"<div class='stat-sub'>Scored {sz_pct:.1f}%</div>"
             f"</div>"
         )
 
@@ -1501,8 +1502,9 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
 
     # ---- Chart (unchanged) ----
     if not tbl.empty:
+        # Keep Goal% on Y, but order by attempts (desc) on X
         chart = alt.Chart(tbl).mark_bar().encode(
-            x=alt.X("Play Call:N", sort="-y", title="Play Call"),
+            x=alt.X("Play Call:N", sort=alt.SortField(field="attempts", order="descending"), title="Play Call"),
             y=alt.Y("Goal%:Q", title="Goal %"),
             color=alt.Color("set_piece:N", title="Type"),
             tooltip=list(tbl.columns),
@@ -1592,10 +1594,19 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
     total_ga = len(view)
     games = len(matches) if not matches.empty else 0
     ga_per_game = (total_ga / games) if games > 0 else 0.0
-    c1,c2,c3 = st.columns(3)
+
+    # Shutouts: matches with 0 goals against (based on current matches view)
+    shutouts = 0
+    if not matches.empty and "goals_against" in matches.columns:
+        ga_series = pd.to_numeric(matches["goals_against"], errors="coerce").fillna(0)
+        shutouts = int((ga_series == 0).sum())
+    shutout_rate = (shutouts / games * 100) if games > 0 else 0.0
+
+    c1,c2,c3,c4 = st.columns(4)
     c1.metric("Conceded (Total)", total_ga)
     c2.metric("Games", games)
     c3.metric("GA / Game", f"{ga_per_game:.2f}")
+    c4.metric("Shutouts", f"{shutouts}", delta=f"{shutout_rate:.0f}%", help="Matches with 0 goals against")
 
     label_axis = alt.Axis(labelAngle=-30) if compact else alt.Axis()
     h = 260 if compact else 300
