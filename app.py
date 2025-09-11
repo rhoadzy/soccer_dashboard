@@ -172,7 +172,29 @@ TEAM_NAME_CANON = "Milton"
 # HELPERS
 # ---------------------------------------------------------------------
 def _bool_col(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.strip().str.lower().isin(["true","1","yes","y"])
+    return series.astype(str).str.strip().str.lower().isin(["true","1","yes","y","t"])
+
+def _normalize_set_piece(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip().str.lower()
+    def norm(v: str) -> str:
+        if not v or v in ("nan", "none"):
+            return ""
+        # Penalties (avoid matching 'open')
+        if v == "pk" or v.startswith("pk ") or v.startswith("pk-") or v.startswith("pk:"):
+            return "penalty"
+        if v.startswith("pen") or ("penalty" in v):
+            return "penalty"
+        # Corners
+        if v in ("ck", "corners", "corner", "corner kick") or v.startswith("corner"):
+            return "corner"
+        # Direct FK
+        if v in ("dfk", "direct fk", "fk direct") or ("direct" in v and "fk" in v):
+            return "fk_direct"
+        # Indirect FK
+        if v in ("ifk", "indirect fk", "fk indirect") or ("indirect" in v and "fk" in v):
+            return "fk_indirect"
+        return v
+    return s.map(norm)
 
 def _qparams_get():
     try: return st.query_params
@@ -1037,8 +1059,8 @@ def generate_ai_set_piece_summary(plays_df: pd.DataFrame,
         if "taker_id" not in df.columns:
             df["taker_id"] = ""
         
-        df["set_piece"] = df["set_piece"].astype(str).str.lower()
-        df["goal_created"] = df["goal_created"].astype(bool)
+        df["set_piece"] = _normalize_set_piece(df["set_piece"]) 
+        df["goal_created"] = _bool_col(df["goal_created"]) 
 
         # Get player names if available
         pl = players.set_index("player_id") if "player_id" in players.columns else pd.DataFrame()
@@ -1324,13 +1346,43 @@ def render_points_leaderboard(events: pd.DataFrame, players: pd.DataFrame, top_n
             pass
 
 def _set_piece_type_stats(df: pd.DataFrame, sp_type: str) -> tuple[int, float]:
-    """Return (total_attempts, pct_scored) for a given set_piece type (lowercase)."""
+    """Return (total_attempts, pct_scored) for a given set_piece type (normalized)."""
     if df.empty or "set_piece" not in df.columns:
         return 0, 0.0
-    sub = df[df["set_piece"].astype(str).str.lower() == sp_type]
-    total = int(len(sub))
-    pct = float(sub["goal_created"].mean() * 100) if total > 0 and "goal_created" in sub.columns else 0.0
+    # Normalize before computing
+    sp = _normalize_set_piece(df["set_piece"]) if "set_piece" in df.columns else pd.Series([], dtype=str)
+    gc = _bool_col(df["goal_created"]) if "goal_created" in df.columns else pd.Series([], dtype=bool)
+    sub_mask = (sp == sp_type)
+    total = int(sub_mask.sum())
+    pct = float(gc[sub_mask].mean() * 100) if total > 0 else 0.0
     return total, pct
+
+def _set_piece_type_counts(df: pd.DataFrame, sp_type: str) -> tuple[int, int]:
+    """Return (total_attempts, goals_scored) for a given set_piece type (normalized)."""
+    if df.empty or "set_piece" not in df.columns:
+        return 0, 0
+    sp = _normalize_set_piece(df["set_piece"]) if "set_piece" in df.columns else pd.Series([], dtype=str)
+    gc = _bool_col(df.get("goal_created", pd.Series([], dtype=bool)))
+    mask = (sp == sp_type)
+    total = int(mask.sum())
+    goals = int(gc[mask].sum()) if total > 0 else 0
+    return total, goals
+
+def _set_piece_aggregate(df: pd.DataFrame, include_penalties: bool = True) -> tuple[int, int]:
+    """Return (total_attempts, goals_scored) across set-piece types.
+    Includes corners, direct FK, indirect FK, and optionally penalties.
+    """
+    if df.empty:
+        return 0, 0
+    sp = _normalize_set_piece(df.get("set_piece", pd.Series([], dtype=str)))
+    gc = _bool_col(df.get("goal_created", pd.Series([], dtype=bool)))
+    allowed = {"corner", "fk_direct", "fk_indirect"}
+    if include_penalties:
+        allowed.add("penalty")
+    mask = sp.isin(list(allowed))
+    total = int(mask.sum())
+    goals = int(gc[mask].sum()) if total > 0 else 0
+    return total, goals
 
 def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.DataFrame, players: pd.DataFrame):
     st.subheader("Set-Piece Analysis")
@@ -1346,26 +1398,101 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
         df["set_piece"] = ""
     if "goal_created" not in df.columns:
         df["goal_created"] = False
-    df["set_piece"] = df["set_piece"].astype(str).str.lower()
-    df["goal_created"] = df["goal_created"].astype(bool)
+    df["set_piece"] = _normalize_set_piece(df["set_piece"])
+    df["goal_created"] = _bool_col(df["goal_created"])
 
     # ---- KPI tiles (mobile-friendly card grid) ----
-    corners_total, corners_pct   = _set_piece_type_stats(df, "corner")
-    pens_total, pens_pct         = _set_piece_type_stats(df, "penalty")
-    fk_dir_total, fk_dir_pct     = _set_piece_type_stats(df, "fk_direct")
-    fk_ind_total, fk_ind_pct     = _set_piece_type_stats(df, "fk_indirect")
+    # Show values for current filters (df) and season totals for clarity
+    season_df = load_plays_simple()
+    season_df.columns = [c.strip().lower() for c in season_df.columns]
+    if "set_piece" not in season_df.columns:
+        season_df["set_piece"] = ""
+    if "goal_created" not in season_df.columns:
+        season_df["goal_created"] = False
+    season_df["set_piece"] = _normalize_set_piece(season_df["set_piece"]) 
+    season_df["goal_created"] = _bool_col(season_df["goal_created"]) 
 
-    kpi_items = [
-        ("Corners",      corners_total,  corners_pct),
-        ("Penalties",    pens_total,     pens_pct),
-        ("Direct FK",    fk_dir_total,   fk_dir_pct),
-        ("Indirect FK",  fk_ind_total,   fk_ind_pct),
-    ]
+    def build_row_kpi(label: str, key: str):
+        sz_total, sz_goals = _set_piece_type_counts(season_df, key)
+        sz_pct = (sz_goals / sz_total * 100) if sz_total > 0 else 0.0
+        return (
+            f"<div class='stat-card'>"
+            f"<div class='stat-label'>{label}</div>"
+            f"<div class='stat-value'>{sz_total}</div>"
+            f"<div class='stat-sub'>Season: {sz_goals}/{sz_total} ({sz_pct:.1f}%)</div>"
+            f"</div>"
+        )
 
-    kpi_html = "<div class='kpi-grid'>" + "".join(
-        f"<div class='stat-card'><div class='stat-label'>{name}</div><div class='stat-value'>{total}</div><div class='stat-sub'>Scored {pct:.1f}%</div></div>"
-        for (name, total, pct) in kpi_items
-    ) + "</div>"
+    def build_row(label: str, key: str):
+        ft_total, ft_goals = _set_piece_type_counts(df, key)
+        ft_pct = (ft_goals / ft_total * 100) if ft_total > 0 else 0.0
+        sz_total, sz_goals = _set_piece_type_counts(season_df, key)
+        sz_pct = (sz_goals / sz_total * 100) if sz_total > 0 else 0.0
+        return (
+            f"<div class='stat-card'>"
+            f"<div class='stat-label'>{label}</div>"
+            f"<div class='stat-value'>{ft_total}</div>"
+            f"<div class='stat-sub'>Filtered: {ft_goals}/{ft_total} ({ft_pct:.1f}%) · Season: {sz_goals}/{sz_total} ({sz_pct:.1f}%)</div>"
+            f"</div>"
+        )
+
+    def build_agg_row(label: str, include_pk: bool):
+        ft_total, ft_goals = _set_piece_aggregate(df, include_penalties=include_pk)
+        ft_pct = (ft_goals / ft_total * 100) if ft_total > 0 else 0.0
+        sz_total, sz_goals = _set_piece_aggregate(season_df, include_penalties=include_pk)
+        sz_pct = (sz_goals / sz_total * 100) if sz_total > 0 else 0.0
+        return (
+            f"<div class='stat-card'>"
+            f"<div class='stat-label'>{label}</div>"
+            f"<div class='stat-value'>{ft_total}</div>"
+            f"<div class='stat-sub'>Filtered: {ft_goals}/{ft_total} ({ft_pct:.1f}%) · Season: {sz_goals}/{sz_total} ({sz_pct:.1f}%)</div>"
+            f"</div>"
+        )
+
+    # Build single aggregate KPI row showing incl/no PK for filtered and season
+    ft_total_incl, ft_goals_incl = _set_piece_aggregate(df, include_penalties=True)
+    ft_total_no,   ft_goals_no   = _set_piece_aggregate(df, include_penalties=False)
+    ft_pct_incl = (ft_goals_incl / ft_total_incl * 100) if ft_total_incl > 0 else 0.0
+    ft_pct_no   = (ft_goals_no   / ft_total_no   * 100) if ft_total_no   > 0 else 0.0
+    sz_total_incl, sz_goals_incl = _set_piece_aggregate(season_df, include_penalties=True)
+    sz_total_no,   sz_goals_no   = _set_piece_aggregate(season_df, include_penalties=False)
+    sz_pct_incl = (sz_goals_incl / sz_total_incl * 100) if sz_total_incl > 0 else 0.0
+    sz_pct_no   = (sz_goals_no   / sz_total_no   * 100) if sz_total_no   > 0 else 0.0
+
+    total_row_html2 = (
+        "<div class='stat-card'>"
+        "<div class='stat-label'>Total Set Pieces</div>"
+        f"<div class='stat-value'>{ft_total_incl}</div>"
+        f"<div class='stat-sub'>Incl PK — Values: {ft_goals_incl}/{ft_total_incl} ({ft_pct_incl:.1f}%) &middot; Season: {sz_goals_incl}/{sz_total_incl} ({sz_pct_incl:.1f}%)</div>"
+        f"<div class='stat-sub'>No PK — Values: {ft_goals_no}/{ft_total_no} ({ft_pct_no:.1f}%) &middot; Season: {sz_goals_no}/{sz_total_no} ({sz_pct_no:.1f}%)</div>"
+        "</div>"
+    )
+
+    total_row_html2 = (
+        "<div class='stat-card'>"
+        "<div class='stat-label'>Total Set Pieces</div>"
+        f"<div class='stat-value'>{sz_total_incl}</div>"
+        f"<div class='stat-sub'>Incl PK — Season: {sz_goals_incl}/{sz_total_incl} ({sz_pct_incl:.1f}%)</div>"
+        f"<div class='stat-sub'>No PK — Season: {sz_goals_no}/{sz_total_no} ({sz_pct_no:.1f}%)</div>"
+        "</div>"
+    )
+
+    # Order per-type cards by Season attempts (desc)
+    type_labels = [("corner", "Corners"), ("penalty", "Penalties"), ("fk_direct", "Direct FK"), ("fk_indirect", "Indirect FK")]
+    type_with_counts = []
+    for key, label in type_labels:
+        total, _g = _set_piece_type_counts(season_df, key)
+        type_with_counts.append((total, key, label))
+    type_with_counts.sort(key=lambda x: x[0], reverse=True)
+
+    per_type_html = "".join([build_row_kpi(label, key) for (total, key, label) in type_with_counts])
+
+    kpi_html = (
+        "<div class='kpi-grid'>"
+        + total_row_html2
+        + per_type_html
+        + "</div>"
+    )
     st.markdown(kpi_html, unsafe_allow_html=True)
 
     # ---- Table (unchanged) ----
