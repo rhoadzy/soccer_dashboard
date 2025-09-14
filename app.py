@@ -1776,7 +1776,8 @@ with st.sidebar:
             "compact": str(compact).lower(),
             "div_only": str(div_only).lower(),
             "opp": opponent_q.strip(),
-            "ha": ha_opt[0].lower() if ha_opt else "any",
+            # Store full text so "Any" is not mistaken for Away
+            "ha": ha_opt.lower() if ha_opt else "any",
         }
 
         # Only update if any difference
