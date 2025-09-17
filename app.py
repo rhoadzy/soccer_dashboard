@@ -1,6 +1,7 @@
 # app.py
 import os
 import re
+import json
 from typing import Optional, Dict
 
 # --- Make HTTPS robust on Windows/local: use certifi CA bundle ---
@@ -160,12 +161,11 @@ def require_app_password():
 
 require_app_password()
 
-# External (SI/SBLive) — used only for D2 Rank KPI and quick links
-SI_BASE = "https://www.si.com/high-school/stats/vermont"
-DIVISION_SLUGS = {2: "28806-division-2"}
-SI_TEAM_SLUG = "397925-milton-yellowjackets"
-SI_RANKINGS_URL = f"{SI_BASE}/{DIVISION_SLUGS[2]}/soccer/rankings?formula=DIVISION_POINT_INDEX"
-SI_SCHEDULE_URL = f"{SI_BASE}/soccer/teams/{SI_TEAM_SLUG}/games"
+# External sources: SBLive schedule + MaxPreps standings
+SBLIVE_BASE = "https://www.si.com/high-school/stats/vermont"
+SBLIVE_TEAM_SLUG = "397925-milton-yellowjackets"
+SBLIVE_SCHEDULE_URL = f"{SBLIVE_BASE}/soccer/teams/{SBLIVE_TEAM_SLUG}/games"
+MAXPREPS_RANKINGS_URL = "https://www.maxpreps.com/vt/soccer/25-26/division/division-ii/?statedivisionid=77a2b462-615f-485d-af59-f2419127a41f"
 TEAM_NAME_CANON = "Milton"
 
 # ---------------------------------------------------------------------
@@ -179,19 +179,36 @@ def _normalize_set_piece(series: pd.Series) -> pd.Series:
     def norm(v: str) -> str:
         if not v or v in ("nan", "none"):
             return ""
-        # Penalties (avoid matching 'open')
+        # Penalties (avoid matching "open")
         if v == "pk" or v.startswith("pk ") or v.startswith("pk-") or v.startswith("pk:"):
             return "penalty"
         if v.startswith("pen") or ("penalty" in v):
             return "penalty"
+        # Explicit FK labels first
+        if "fk_direct" in v:
+            return "fk_direct"
+        if "fk_indirect" in v:
+            return "fk_indirect"
+        if v == "dfk":
+            return "fk_direct"
+        if v == "ifk":
+            return "fk_indirect"
+        # Numeric shorthand (1 = direct, 2 = indirect)
+        trimmed = v.strip()
+        if re.match(r"^1(\D|$)", trimmed):
+            return "fk_direct"
+        if re.match(r"^2(\D|$)", trimmed):
+            return "fk_indirect"
         # Corners
         if v in ("ck", "corners", "corner", "corner kick") or v.startswith("corner"):
             return "corner"
-        # Direct FK
-        if v in ("dfk", "direct fk", "fk direct") or ("direct" in v and "fk" in v):
+        # Direct FK variants
+        direct_vals = {"dfk", "direct fk", "fk direct", "direct kick", "direct free kick", "direct"}
+        if v in direct_vals or ("direct" in v and "fk" in v):
             return "fk_direct"
-        # Indirect FK
-        if v in ("ifk", "indirect fk", "fk indirect") or ("indirect" in v and "fk" in v):
+        # Indirect FK variants
+        indirect_vals = {"ifk", "indirect fk", "fk indirect", "indirect kick", "indirect free kick", "indirect"}
+        if v in indirect_vals or ("indirect" in v and "fk" in v):
             return "fk_indirect"
         return v
     return s.map(norm)
@@ -399,13 +416,46 @@ def load_goals_allowed() -> pd.DataFrame:
     return df
 
 # ---------------------------------------------------------------------
-# SI RANKINGS HELPERS (for D2 Rank KPI)
+# RANKINGS HELPERS (for D2 Rank KPI)
 # ---------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_html(url: str) -> str:
     r = requests.get(url, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
     r.raise_for_status()
     return r.text
+
+def _parse_ranks_from_maxpreps(html: str) -> Dict[str, int]:
+    try:
+        m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, flags=re.S)
+        if not m:
+            return {}
+        data = json.loads(m.group(1))
+        layout_props = data.get("props", {}).get("pageProps", {}).get("layoutProps", {})
+        table_data = layout_props.get("tableData", [])
+        if isinstance(table_data, dict):
+            rows = table_data.get("rows", [])
+        else:
+            rows = table_data or []
+        if not isinstance(rows, list):
+            return {}
+        ranks: Dict[str, int] = {}
+        for entry in rows:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("schoolName", "")).strip()
+            rank = entry.get("overallStandingPlacement")
+            if not name or rank in (None, ""):
+                continue
+            try:
+                rank_int = int(rank)
+            except (TypeError, ValueError):
+                continue
+            if rank_int <= 0 or name in ranks:
+                continue
+            ranks[name] = rank_int
+        return ranks
+    except Exception:
+        return {}
 
 def _clean_text(html: str) -> str:
     text = re.sub(r"<script.*?</script>", " ", html, flags=re.S)
@@ -418,18 +468,22 @@ def _clean_text(html: str) -> str:
 def parse_all_ranks_from_si(html: str) -> Dict[str, int]:
     if not html:
         return {}
-    text = _clean_text(html)
-    pairs = re.findall(r"\b(\d{1,2})\s+([A-Z][A-Za-z0-9.\-\' ]{2,})", text)
-    ranks: Dict[str,int] = {}
+    ranks = _parse_ranks_from_maxpreps(html)
+    if ranks:
+        return ranks
+    text_clean = _clean_text(html)
+    pairs = re.findall(r"\b(\d{1,2})\s+([A-Z][A-Za-z0-9.\-\' ]{2,})", text_clean)
+    ranks_fallback: Dict[str, int] = {}
     for num, name in pairs:
         try:
             rank = int(num)
         except Exception:
             continue
         name = name.strip()
-        if rank not in ranks.values():
-            ranks[name] = rank
-    return ranks
+        if rank <= 0 or name in ranks_fallback:
+            continue
+        ranks_fallback[name] = rank
+    return ranks_fallback
 
 def fuzzy_find_rank(ranks: Dict[str,int], target: str) -> Optional[int]:
     t = target.lower().strip()
@@ -455,20 +509,25 @@ def set_piece_leaderboard_from_plays(plays_df: pd.DataFrame) -> pd.DataFrame:
       - goal_created (bool) <-- True if the play directly created a goal
     """
     if plays_df.empty or "play_call_id" not in plays_df.columns:
-        return pd.DataFrame(columns=["set_piece", "Play Call", "play_type", "attempts", "Goal%"])
+        return pd.DataFrame(columns=["set_piece", "Play Call", "play_type", "attempts", "Goals", "Goal%"])
 
     grp = (
         plays_df.groupby(["play_call_id", "set_piece", "play_type"], dropna=False)
-        .agg(attempts=("play_call_id", "count"), goal_rate=("goal_created", "mean"))
+        .agg(
+            attempts=("play_call_id", "count"),
+            goals=("goal_created", "sum"),
+            goal_rate=("goal_created", "mean"),
+        )
         .reset_index()
     )
+    grp["goals"] = grp["goals"].fillna(0).astype(int)
     grp["Goal%"] = (grp["goal_rate"] * 100).round(1)
 
-    out = grp.rename(columns={"play_call_id": "Play Call"})
+    out = grp.rename(columns={"play_call_id": "Play Call", "goals": "Goals"})
     # Sort primarily by attempts (desc) to surface most-used plays
-    return out[["set_piece", "Play Call", "play_type", "attempts", "Goal%"]].sort_values(
-        ["attempts", "Goal%", "Play Call"], ascending=[False, False, True]
-    )
+    cols = ["set_piece", "Play Call", "play_type", "attempts", "Goals", "Goal%"]
+    ordered = out[cols].sort_values(["Goal%", "attempts", "Play Call"], ascending=[False, False, True])
+    return ordered
 
 def build_trend_frame(matches: pd.DataFrame) -> pd.DataFrame:
     if matches.empty:
@@ -797,7 +856,7 @@ def get_next_opponent_from_schedule() -> Optional[Dict[str, str]]:
 
     # 2) Fallback to SB Live simple parse
     try:
-        html = fetch_html(SI_SCHEDULE_URL)
+        html = fetch_html(SBLIVE_SCHEDULE_URL)
         text = _clean_text(html)
         lines = text.split('\n')
         for line in lines:
@@ -852,7 +911,7 @@ def _extract_links_with_text(html: str) -> list[tuple[str,str]]:
 def find_opponent_slug_from_our_schedule(opponent_name: str) -> Optional[str]:
     """Try to find the SI team slug for an opponent by scanning our SI schedule page for a link to that team."""
     try:
-        html = fetch_html(SI_SCHEDULE_URL)
+        html = fetch_html(SBLIVE_SCHEDULE_URL)
         links = _extract_links_with_text(html)
         target = opponent_name.lower().strip()
         for href, text in links:
@@ -870,7 +929,7 @@ def scrape_team_schedule_stats(team_slug: str) -> Optional[Dict[str, any]]:
     This is a best-effort text parse; if it fails, returns None.
     """
     try:
-        url = f"{SI_BASE}/soccer/teams/{team_slug}/games"
+        url = f"{SBLIVE_BASE}/soccer/teams/{team_slug}/games"
         html = fetch_html(url)
         text = _clean_text(html)
 
@@ -1390,6 +1449,8 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
 
     # ---- Guard + normalize ----
     if plays_df is None or plays_df.empty:
+        st.session_state.pop("ai_set_piece_summary", None)
+        st.session_state.pop("ai_set_piece_error", None)
         st.info("No set-play rows yet. Add data to the `plays` sheet.")
         return
 
@@ -1512,13 +1573,30 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
         st.altair_chart(chart, use_container_width=True)
 
     # ---- AI Insights ----
-    if st.button("Generate AI Insights on Set-Piece Performance"):
-        ai_txt = generate_ai_set_piece_summary(plays_df, matches, players)
+    state_key = "ai_set_piece_summary"
+    error_key = "ai_set_piece_error"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = None
+    if error_key not in st.session_state:
+        st.session_state[error_key] = None
+
+    if st.button("Generate AI Insights on Set-Piece Performance", key="generate_ai_set_piece"):
+        with st.spinner("Generating set-piece insights..."):
+            ai_txt = generate_ai_set_piece_summary(plays_df, matches, players)
         if ai_txt:
-            st.markdown("**AI Set-Piece Analysis & Recommendations**")
-            st.write(ai_txt)
+            st.session_state[state_key] = ai_txt
+            st.session_state[error_key] = None
         else:
-            st.caption("AI summary unavailable (no Gemini key set or not enough context).")
+            st.session_state[state_key] = None
+            st.session_state[error_key] = "AI summary unavailable (no Gemini key set or not enough context)."
+
+    summary_text = st.session_state.get(state_key)
+    summary_error = st.session_state.get(error_key)
+    if summary_text:
+        st.markdown("**AI Set-Piece Analysis & Recommendations**")
+        st.write(summary_text)
+    elif summary_error:
+        st.caption(summary_error)
 
 
 
@@ -1557,6 +1635,8 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
                                   compact: bool=False):
     st.subheader("Goals Allowed (Season)")
     if ga_df.empty:
+        st.session_state.pop("ai_conceded_summary", None)
+        st.session_state.pop("ai_conceded_error", None)
         st.info("No rows in `goals_allowed` yet. Add columns: match_id, goal_id, description, goalie_player_id, minute, situation.")
         return
 
@@ -1639,13 +1719,30 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
     st.altair_chart(chart_sit | chart_min, use_container_width=True)
     st.altair_chart(chart_gk, use_container_width=True)
 
-    if st.button("Generate AI Insights on Conceded Goals"):
-        ai_txt = generate_ai_conceded_summary(view, matches, players)
+    state_key = "ai_conceded_summary"
+    error_key = "ai_conceded_error"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = None
+    if error_key not in st.session_state:
+        st.session_state[error_key] = None
+
+    if st.button("Generate AI Insights on Conceded Goals", key="generate_ai_conceded"):
+        with st.spinner("Analyzing conceded goals..."):
+            ai_txt = generate_ai_conceded_summary(view, matches, players)
         if ai_txt:
-            st.markdown("**AI Defensive Summary & Recommendations**")
-            st.write(ai_txt)
+            st.session_state[state_key] = ai_txt
+            st.session_state[error_key] = None
         else:
-            st.caption("AI summary unavailable (no Gemini key set or not enough context).")
+            st.session_state[state_key] = None
+            st.session_state[error_key] = "AI summary unavailable (no Gemini key set or not enough context)."
+
+    conceded_summary = st.session_state.get(state_key)
+    conceded_error = st.session_state.get(error_key)
+    if conceded_summary:
+        st.markdown("**AI Defensive Summary & Recommendations**")
+        st.write(conceded_summary)
+    elif conceded_error:
+        st.caption(conceded_error)
 
 def render_game_drilldown(match_id: str, matches: pd.DataFrame, players: pd.DataFrame, events: pd.DataFrame, plays_df: pd.DataFrame, summaries: pd.DataFrame):
     row = matches.loc[matches["match_id"] == match_id]
@@ -1767,8 +1864,8 @@ with st.sidebar:
     opponent_q = st.text_input("Opponent contains", value=str(qp_init.get("opp","")))
     ha_opt = st.selectbox("Home/Away", ["Any","Home","Away"], index={"any":0,"home":1,"away":2}.get(str(qp_init.get("ha","any")).lower(),0))
 
-    st.link_button("Open Schedule", SI_SCHEDULE_URL)
-    st.link_button("Open Rankings (D2)", SI_RANKINGS_URL)
+    st.link_button("Open Schedule", SBLIVE_SCHEDULE_URL)
+    st.link_button("Open Rankings (D2)", MAXPREPS_RANKINGS_URL)
 
     # Sync toggles/filters to query params only when they differ
     try:
@@ -1834,7 +1931,7 @@ except Exception:
 # D2 rank (KPI only)
 our_rank = None
 try:
-    si_html_rank = fetch_html(SI_RANKINGS_URL)
+    si_html_rank = fetch_html(MAXPREPS_RANKINGS_URL)
     ranks = parse_all_ranks_from_si(si_html_rank)
     our_rank = fuzzy_find_rank(ranks, TEAM_NAME_CANON)
 except Exception:
@@ -1864,9 +1961,12 @@ else:
     _team_kpis(matches_view, d2_rank=our_rank, compact=compact)
 
 
-    tabs = st.tabs(["Games","Trends","Leaders","Goals Allowed","Set Pieces"])
+    tab_labels = ["Games","Trends","Leaders","Goals Allowed","Set Pieces"]
+    if "main_tab_radio" not in st.session_state:
+        st.session_state["main_tab_radio"] = tab_labels[0]
+    selected_tab = st.radio("", tab_labels, horizontal=True, key="main_tab_radio", label_visibility="collapsed")
 
-    with tabs[0]:
+    if selected_tab == "Games":
         render_games_table(matches_view, compact=compact)
         # Place AI Chat Assistant under the game schedule
         st.divider()
@@ -1958,16 +2058,17 @@ else:
         if st.button("Clear Chat History"):
             st.session_state.ai_chat_history = []
             st.rerun()
-    with tabs[1]:
+
+    elif selected_tab == "Trends":
         if matches_view.empty:
             st.info("No games yet to build trends.")
         else:
             # Comparison between all games vs last 3 games
             comparison_df = build_comparison_trend_frame(matches_view)
             individual_df = build_individual_game_trends(matches_view)
-            
+
             st.subheader("All Games vs Last 3 Games Comparison")
-            
+
             # Display comparison table
             st.dataframe(
                 comparison_df.round(2),
@@ -1975,11 +2076,11 @@ else:
                 hide_index=True,
                 height=200
             )
-            
+
             # Create comparison charts
             label_axis = alt.Axis(labelAngle=-45) if compact else alt.Axis()
             h = 220
-            
+
             # Melt the comparison data for better charting
             comparison_melted = comparison_df.melt(
                 id_vars=["Metric"],
@@ -1987,7 +2088,7 @@ else:
                 var_name="Period",
                 value_name="Value"
             )
-            
+
             # Comparison bar chart
             comparison_chart = alt.Chart(comparison_melted).mark_bar().encode(
                 x=alt.X("Metric:N", title="Metric", axis=label_axis),
@@ -1996,9 +2097,9 @@ else:
                 tooltip=["Metric", "Period", "Value"]
             ).properties(height=h)
             st.altair_chart(comparison_chart, use_container_width=True)
-            
+
             st.subheader("Individual Game Performance")
-            
+
             # Individual game trends
             for col, title in [
                 ("GF", "Goals For"),
@@ -2011,23 +2112,26 @@ else:
                 chart = alt.Chart(individual_df).mark_circle(size=60).encode(
                     x=alt.X("Game #:O", title="Game Number"),
                     y=alt.Y(f"{col}:Q", title=title),
-                    color=alt.Color("Last 3 Games:N", 
+                    color=alt.Color("Last 3 Games:N",
                                   scale=alt.Scale(domain=[True, False], range=["#ff6b6b", "#4ecdc4"]),
                                   title="Last 3 Games"),
                     tooltip=["Game #", "Date", "Opponent", col, "Last 3 Games"]
                 ).properties(height=h)
-                
+
                 # Add trend line
                 trend_line = alt.Chart(individual_df).mark_line(color="gray", opacity=0.5).encode(
                     x=alt.X("Game #:O"),
                     y=alt.Y(f"{col}:Q")
                 ).properties(height=h)
-                
+
                 final_chart = (chart + trend_line).resolve_scale(color="independent")
                 st.altair_chart(final_chart, use_container_width=True)
-    with tabs[2]:
+
+    elif selected_tab == "Leaders":
         render_points_leaderboard(events_view, players, top_n=5, compact=compact)
-    with tabs[3]:
+
+    elif selected_tab == "Goals Allowed":
         render_goals_allowed_analysis(ga_view, matches_view, players, compact=compact)
-    with tabs[4]:
+
+    elif selected_tab == "Set Pieces":
         render_set_piece_analysis_from_plays(plays_view, matches_view, players)
