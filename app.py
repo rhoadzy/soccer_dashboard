@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import html
 from typing import Optional, Dict
 
 # --- Make HTTPS robust on Windows/local: use certifi CA bundle ---
@@ -161,11 +162,11 @@ def require_app_password():
 
 require_app_password()
 
-# External sources: SBLive schedule + MaxPreps standings
+# External sources: SBLive schedule + SBLive rankings
 SBLIVE_BASE = "https://www.si.com/high-school/stats/vermont"
 SBLIVE_TEAM_SLUG = "397925-milton-yellowjackets"
 SBLIVE_SCHEDULE_URL = f"{SBLIVE_BASE}/soccer/teams/{SBLIVE_TEAM_SLUG}/games"
-MAXPREPS_RANKINGS_URL = "https://www.maxpreps.com/vt/soccer/25-26/division/division-ii/?statedivisionid=77a2b462-615f-485d-af59-f2419127a41f"
+SBLIVE_RANKINGS_URL = "https://www.si.com/high-school/stats/vermont/28806-division-2/soccer/rankings?formula=DIVISION_POINT_INDEX"
 TEAM_NAME_CANON = "Milton"
 
 # ---------------------------------------------------------------------
@@ -424,30 +425,36 @@ def fetch_html(url: str) -> str:
     r.raise_for_status()
     return r.text
 
-def _parse_ranks_from_maxpreps(html: str) -> Dict[str, int]:
+def _parse_ranks_from_sblive(html: str) -> Dict[str, int]:
     try:
-        m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, flags=re.S)
+        m = re.search(r'data-react-props="(.*?)"', html, flags=re.S)
         if not m:
             return {}
-        data = json.loads(m.group(1))
-        layout_props = data.get("props", {}).get("pageProps", {}).get("layoutProps", {})
-        table_data = layout_props.get("tableData", [])
-        if isinstance(table_data, dict):
-            rows = table_data.get("rows", [])
+        props = json.loads(html.unescape(m.group(1)))
+        ranking = props.get("query", {}).get("ranking", {})
+        team_rankings = ranking.get("teamRankings") or {}
+        if isinstance(team_rankings, dict):
+            nodes = team_rankings.get("nodes") or []
+        elif isinstance(team_rankings, list):
+            nodes = team_rankings
         else:
-            rows = table_data or []
-        if not isinstance(rows, list):
-            return {}
+            nodes = []
         ranks: Dict[str, int] = {}
-        for entry in rows:
+        for entry in nodes:
             if not isinstance(entry, dict):
                 continue
-            name = str(entry.get("schoolName", "")).strip()
-            rank = entry.get("overallStandingPlacement")
-            if not name or rank in (None, ""):
+            team = entry.get("team") or {}
+            name = str(team.get("name", "")).strip()
+            if not name:
                 continue
+            rank_value = (
+                entry.get("filteredPlace")
+                or entry.get("place")
+                or entry.get("rank")
+                or entry.get("overallStandingPlacement")
+            )
             try:
-                rank_int = int(rank)
+                rank_int = int(rank_value)
             except (TypeError, ValueError):
                 continue
             if rank_int <= 0 or name in ranks:
@@ -456,6 +463,7 @@ def _parse_ranks_from_maxpreps(html: str) -> Dict[str, int]:
         return ranks
     except Exception:
         return {}
+
 
 def _clean_text(html: str) -> str:
     text = re.sub(r"<script.*?</script>", " ", html, flags=re.S)
@@ -468,7 +476,7 @@ def _clean_text(html: str) -> str:
 def parse_all_ranks_from_si(html: str) -> Dict[str, int]:
     if not html:
         return {}
-    ranks = _parse_ranks_from_maxpreps(html)
+    ranks = _parse_ranks_from_sblive(html)
     if ranks:
         return ranks
     text_clean = _clean_text(html)
@@ -1865,7 +1873,7 @@ with st.sidebar:
     ha_opt = st.selectbox("Home/Away", ["Any","Home","Away"], index={"any":0,"home":1,"away":2}.get(str(qp_init.get("ha","any")).lower(),0))
 
     st.link_button("Open Schedule", SBLIVE_SCHEDULE_URL)
-    st.link_button("Open Rankings (D2)", MAXPREPS_RANKINGS_URL)
+    st.link_button("Open Rankings (D2)", SBLIVE_RANKINGS_URL)
 
     # Sync toggles/filters to query params only when they differ
     try:
@@ -1931,7 +1939,7 @@ except Exception:
 # D2 rank (KPI only)
 our_rank = None
 try:
-    si_html_rank = fetch_html(MAXPREPS_RANKINGS_URL)
+    si_html_rank = fetch_html(SBLIVE_RANKINGS_URL)
     ranks = parse_all_ranks_from_si(si_html_rank)
     our_rank = fuzzy_find_rank(ranks, TEAM_NAME_CANON)
 except Exception:
