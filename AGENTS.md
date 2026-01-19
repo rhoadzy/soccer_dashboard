@@ -18,6 +18,11 @@
 - Keep Streamlit sections grouped by feature (Overview, Games, Trends, Set-Pieces, Defense).
 - If you add new tabs/metrics, keep column names consistent with the Google Sheets schema in `README.md`.
 
+## Architecture Overview
+- Data flow: Google Sheets → `google_sheets_adapter.py` → Pandas DataFrames → Streamlit UI + AI summaries.
+- Core sheets: `matches`, `players`, `events`, `plays`, `goals_allowed`, `summaries` (or `summary`).
+- External fetches: SBLive rankings/schedule are optional enrichments and should not block the core UI.
+
 ## Testing Guidelines
 - No automated test suite is present in this repo.
 - If you add tests, place them under `tests/` and name files `test_*.py`.
