@@ -32,6 +32,35 @@ except Exception:
 # ---------------------------------------------------------------------
 st.set_page_config(page_title="HS Soccer Dashboard", layout="wide")
 
+# Debug flag for AI issues (set DEBUG_AI=true in .env)
+DEBUG_AI = os.getenv("DEBUG_AI", "").strip().lower() in ("1", "true", "yes", "on")
+
+def _record_ai_error(context: str, err: Exception) -> None:
+    """Store AI errors in session state when DEBUG_AI is enabled."""
+    if not DEBUG_AI:
+        return
+    try:
+        st.session_state["ai_last_error_context"] = context
+        st.session_state["ai_last_error"] = str(err)
+    except Exception:
+        pass
+
+def _ai_user_error_message(default_msg: str) -> str:
+    """Return a simplified user-facing AI error message."""
+    err = str(st.session_state.get("ai_last_error", "")).lower()
+    if "quota" in err or "rate limit" in err or "429" in err:
+        return "AI quota limit reached. Please try again later or check billing."
+    return default_msg
+
+def _render_ai_debug() -> None:
+    """Render last AI error in the UI when DEBUG_AI is enabled."""
+    if not DEBUG_AI:
+        return
+    err = st.session_state.get("ai_last_error")
+    if err:
+        ctx = st.session_state.get("ai_last_error_context", "unknown")
+        st.caption(f"AI debug ({ctx}): {err}")
+
 # Load local .env (for local dev)
 load_dotenv()
 
@@ -647,6 +676,11 @@ def generate_ai_game_summary(match_row: pd.Series,
                              events: pd.DataFrame) -> Optional[str]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or genai is None:
+        if DEBUG_AI:
+            _record_ai_error(
+                "generate_ai_game_summary",
+                Exception("Missing GEMINI_API_KEY or google.generativeai import failed"),
+            )
         return None
     try:
         genai.configure(api_key=api_key)
@@ -693,7 +727,8 @@ def generate_ai_game_summary(match_row: pd.Series,
         resp = model.generate_content([sys, str(user)])
         text = getattr(resp, "text", "").strip()
         return text or None
-    except Exception:
+    except Exception as e:
+        _record_ai_error("generate_ai_game_summary", e)
         return None
 
 # --- AI: conceded goals summary ---
@@ -702,6 +737,11 @@ def generate_ai_conceded_summary(ga_df: pd.DataFrame,
                                  players: pd.DataFrame) -> Optional[str]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or genai is None:
+        if DEBUG_AI:
+            _record_ai_error(
+                "generate_ai_conceded_summary",
+                Exception("Missing GEMINI_API_KEY or google.generativeai import failed"),
+            )
         return None
     try:
         genai.configure(api_key=api_key)
@@ -747,7 +787,8 @@ def generate_ai_conceded_summary(ga_df: pd.DataFrame,
 
         resp = model.generate_content(prompt)
         return getattr(resp, "text", "").strip() or None
-    except Exception:
+    except Exception as e:
+        _record_ai_error("generate_ai_conceded_summary", e)
         return None
 
 # --- AI: General team analysis and Q&A ---
@@ -760,6 +801,11 @@ def generate_ai_team_analysis(query: str,
     """Generate AI analysis based on user query about team performance."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or genai is None:
+        if DEBUG_AI:
+            _record_ai_error(
+                "generate_ai_team_analysis",
+                Exception("Missing GEMINI_API_KEY or google.generativeai import failed"),
+            )
         return None
     
     try:
@@ -834,7 +880,8 @@ def generate_ai_team_analysis(query: str,
 
         resp = model.generate_content([system_prompt, user_prompt])
         return getattr(resp, "text", "").strip() or None
-    except Exception:
+    except Exception as e:
+        _record_ai_error("generate_ai_team_analysis", e)
         return None
 
 def get_next_opponent_from_schedule() -> Optional[Dict[str, str]]:
@@ -1047,6 +1094,11 @@ def generate_ai_opponent_analysis(opponent_name: str,
     """Generate AI analysis of upcoming opponent."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or genai is None:
+        if DEBUG_AI:
+            _record_ai_error(
+                "generate_ai_opponent_analysis",
+                Exception("Missing GEMINI_API_KEY or google.generativeai import failed"),
+            )
         return None
     
     try:
@@ -1100,7 +1152,8 @@ def generate_ai_opponent_analysis(opponent_name: str,
 
         resp = model.generate_content([system_prompt, user_prompt])
         return getattr(resp, "text", "").strip() or None
-    except Exception:
+    except Exception as e:
+        _record_ai_error("generate_ai_opponent_analysis", e)
         return None
 
 # --- AI: set-piece analysis summary ---
@@ -1109,6 +1162,11 @@ def generate_ai_set_piece_summary(plays_df: pd.DataFrame,
                                   players: pd.DataFrame) -> Optional[str]:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key or genai is None:
+        if DEBUG_AI:
+            _record_ai_error(
+                "generate_ai_set_piece_summary",
+                Exception("Missing GEMINI_API_KEY or google.generativeai import failed"),
+            )
         return None
     
     try:
@@ -1188,7 +1246,8 @@ def generate_ai_set_piece_summary(plays_df: pd.DataFrame,
 
         resp = model.generate_content(prompt)
         return getattr(resp, "text", "").strip() or None
-    except Exception:
+    except Exception as e:
+        _record_ai_error("generate_ai_set_piece_summary", e)
         return None
 
 # ---------------------------------------------------------------------
@@ -1604,7 +1663,8 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
         st.markdown("**AI Set-Piece Analysis & Recommendations**")
         st.write(summary_text)
     elif summary_error:
-        st.caption(summary_error)
+        st.caption(_ai_user_error_message(summary_error))
+        _render_ai_debug()
 
 
 
@@ -1635,7 +1695,8 @@ def render_coach_notes_and_summary(match_id: str,
         st.markdown("**AI Game Summary**")
         st.write(ai_txt)
     else:
-        st.caption("AI summary unavailable (no Gemini key set or not enough context).")
+        st.caption(_ai_user_error_message("AI summary unavailable (no Gemini key set or not enough context)."))
+        _render_ai_debug()
 
 def render_goals_allowed_analysis(ga_df: pd.DataFrame,
                                   matches: pd.DataFrame,
@@ -1750,7 +1811,8 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
         st.markdown("**AI Defensive Summary & Recommendations**")
         st.write(conceded_summary)
     elif conceded_error:
-        st.caption(conceded_error)
+        st.caption(_ai_user_error_message(conceded_error))
+        _render_ai_debug()
 
 def render_game_drilldown(match_id: str, matches: pd.DataFrame, players: pd.DataFrame, events: pd.DataFrame, plays_df: pd.DataFrame, summaries: pd.DataFrame):
     row = matches.loc[matches["match_id"] == match_id]
@@ -2003,6 +2065,7 @@ else:
                         <strong>AI:</strong> {message['content']}
                     </div>
                     """, unsafe_allow_html=True)
+        _render_ai_debug()
 
         # Chat input
         c1, c2 = st.columns([4, 1])
@@ -2054,8 +2117,10 @@ else:
                 st.session_state.ai_chat_history.append({
                     "role": "assistant",
                     "content": (
-                        "I'm sorry, I couldn't generate a response. "
-                        "Please make sure you have a Gemini API key configured and try again."
+                        _ai_user_error_message(
+                            "I'm sorry, I couldn't generate a response. "
+                            "Please make sure you have a Gemini API key configured and try again."
+                        )
                     ),
                 })
 

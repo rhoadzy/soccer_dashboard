@@ -4,3 +4,8 @@ service_account.json
 hs-soccer-dashboard-*.json
 *.secret.json
 *.credentials.json
+
+# python artifacts
+__pycache__/
+*.pyc
+.venv/
