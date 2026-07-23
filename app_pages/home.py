@@ -10,6 +10,7 @@ under pages/, ui/, and ai/.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape
 from typing import Callable, Optional
 
 import pandas as pd
@@ -60,7 +61,16 @@ def render_home(
     compact: bool,
     handlers: HomeHandlers,
 ) -> None:
-    st.header(title)
+    st.markdown(
+        f"""
+        <section class="dashboard-masthead">
+            <div class="dashboard-kicker">Milton soccer / team workspace</div>
+            <h1>{escape(title)}</h1>
+            <p>Match results, performance trends, player leaders, and defensive review.</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # Data health panel
     with st.expander("Data Health", expanded=False):

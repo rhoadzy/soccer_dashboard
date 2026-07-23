@@ -23,7 +23,18 @@ def render_sidebar(
     """
 
     with st.sidebar:
-        st.title("HS Soccer")
+        st.markdown(
+            """
+            <div class="sidebar-brand">
+                <div class="sidebar-brand-mark">M</div>
+                <div class="sidebar-brand-copy">
+                    <strong>Milton Soccer</strong>
+                    <span>Varsity boys</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         if st.button("Dashboard (Home)"):
             qparams_set()
             st.rerun()
