@@ -30,7 +30,7 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 - **AI Game Summaries**: Automated match recaps and takeaways
 
 ### 🤖 **AI-Powered Insights**
-- **Gemini 2.0 Flash Lite**: Fast, reliable AI analysis
+- **Groq-hosted Llama**: Fast, reliable AI analysis
 - **Set-Piece Strategy**: Recommendations for corner kicks, free kicks, penalties
 - **Defensive Coaching**: Automated defensive improvement suggestions
 - **Game Analysis**: Match-specific insights and training priorities
@@ -38,9 +38,9 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 ## 🛠️ Setup
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.10+
 - Google Cloud Project with Sheets API enabled
-- Gemini API key (optional, for AI features)
+- Groq API key (optional, for AI features)
 
 ### Installation
 
@@ -56,16 +56,17 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
    ```
 
 3. **Configure environment variables**
-   
+
    Create a `.env` file or set Streamlit secrets:
    ```bash
    SPREADSHEET_KEY=your_google_sheet_id_or_url
-   GEMINI_API_KEY=your_gemini_api_key  # Optional
+   GROQ_API_KEY=your_groq_api_key  # Optional
+   GROQ_MODEL=llama-3.3-70b-versatile  # Optional override
    GOOGLE_SERVICE_ACCOUNT_JSON=path_to_service_account.json
    ```
 
 4. **Set up Google Sheets**
-   
+
    Your Google Sheet should have these tabs:
    - **matches**: Game results and statistics (include optional 'url' column for game recordings)
    - **players**: Team roster information
@@ -138,7 +139,8 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 
 ### Environment Variables
 - `SPREADSHEET_KEY`: Your Google Sheet ID or URL
-- `GEMINI_API_KEY`: Gemini API key for AI features
+- `GROQ_API_KEY`: Groq API key for AI features
+- `GROQ_MODEL`: Optional Groq model override (defaults to `llama-3.3-70b-versatile`)
 - `GOOGLE_SERVICE_ACCOUNT_JSON`: Service account credentials
 - `APP_PASSWORD`: Optional password protection
 
@@ -146,7 +148,8 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 For cloud deployment, configure these in your Streamlit secrets:
 ```toml
 SPREADSHEET_KEY = "your_sheet_id"
-GEMINI_API_KEY = "your_api_key"
+GROQ_API_KEY = "your_api_key"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 GOOGLE_SERVICE_ACCOUNT_JSON = "your_service_account_json"
 ```
 

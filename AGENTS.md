@@ -31,7 +31,7 @@
   - Drilldown via `?match_id=...` works + Back to Dashboard works
 
 ## Coding Style & Naming Conventions
-- Python 3.8+ codebase; keep indentation at 4 spaces.
+- Python 3.10+ codebase; keep indentation at 4 spaces.
 - Favor explicit, descriptive names (`matches_df`, `set_piece_summary`) over abbreviations.
 - Keep Streamlit sections grouped by feature (Overview, Games, Trends, Set-Pieces, Defense).
 - If you add new tabs/metrics, keep column names consistent with the Google Sheets schema in `README.md`.
@@ -58,5 +58,5 @@
 
 ## Security & Configuration Tips
 - Do not commit secrets. Keep `service_account.json` and other credentials local only.
-- Configure `SPREADSHEET_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON`, and optional `GEMINI_API_KEY` via `.env` or Streamlit secrets.
+- Configure `SPREADSHEET_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON`, and optional `GROQ_API_KEY` via `.env` or Streamlit secrets.
 - Validate new columns/tabs in Sheets before relying on them in the UI.

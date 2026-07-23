@@ -105,7 +105,7 @@ def render_home_tab_games(
                     "content": (
                         ai_user_error_message(
                             "I'm sorry, I couldn't generate a response. "
-                            "Please make sure you have a Gemini API key configured and try again."
+                            "Please make sure you have a Groq API key configured and try again."
                         )
                     ),
                 }

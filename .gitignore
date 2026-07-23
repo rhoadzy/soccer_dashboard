@@ -9,3 +9,4 @@ hs-soccer-dashboard-*.json
 __pycache__/
 *.pyc
 .venv/
+.playwright-cli/

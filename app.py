@@ -17,11 +17,9 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from app_pages.home import HomeHandlers, render_home
+from app_pages.home import HomeHandlers
 import requests
 from dotenv import load_dotenv
-
-from google_sheets_adapter import read_sheet_to_df
 
 # Centralized cached data loaders
 from loaders import (
@@ -279,27 +277,19 @@ def _normalize_set_piece(series: pd.Series) -> pd.Series:
         return v
     return s.map(norm)
 
-def _qparams_get():
-    try: return st.query_params
-    except Exception: return st.experimental_get_query_params()
+def _qparams_get() -> dict[str, str]:
+    """Return the current URL query parameters as a plain dictionary."""
+    return st.query_params.to_dict()
 
 def _qparams_set(**kwargs):
-    try:
-        st.query_params.clear()
-        for k,v in kwargs.items(): st.query_params[k] = v
-    except Exception:
-        st.experimental_set_query_params(**kwargs)
+    """Replace all URL query parameters in one frontend update."""
+    st.query_params.from_dict(kwargs)
 
 def _qparams_merge_update(**kwargs):
     """Merge update query params without dropping existing ones."""
-    try:
-        qp = dict(st.query_params)
-    except Exception:
-        qp = dict(st.experimental_get_query_params())
-    # Flatten list values from experimental API
-    qp2 = {k: (v[0] if isinstance(v, list) and v else v) for k,v in qp.items()}
-    qp2.update({k: v for k,v in kwargs.items() if v is not None})
-    _qparams_set(**qp2)
+    query_params = st.query_params.to_dict()
+    query_params.update({key: value for key, value in kwargs.items() if value is not None})
+    _qparams_set(**query_params)
 
 def _qp_bool(val, default=False) -> bool:
     if val is None: return default
@@ -1791,4 +1781,3 @@ handlers = HomeHandlers(
 )
 
 route(ctx=ctx, handlers=handlers)
-

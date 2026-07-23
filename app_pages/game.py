@@ -45,7 +45,7 @@ def render_coach_notes_and_summary(
         st.markdown("**AI Game Summary**")
         st.write(ai_txt)
     else:
-        st.caption(ai_user_error_message("AI summary unavailable (no Gemini key set or not enough context)."))
+        st.caption(ai_user_error_message("AI summary unavailable (no Groq key set or not enough context)."))
         render_ai_debug()
 
 

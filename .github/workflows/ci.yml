@@ -24,4 +24,8 @@ jobs:
 
       - name: Syntax check
         run: |
-          python -m py_compile app.py google_sheets_adapter.py
+          python -m compileall -q app.py app_context.py router.py app_pages data ui google_sheets_adapter.py loaders.py
+
+      - name: Dependency compatibility check
+        run: |
+          python -c "import altair, pandas, streamlit; print(f'Streamlit {streamlit.__version__}, pandas {pandas.__version__}, Altair {altair.__version__}')"
