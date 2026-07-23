@@ -1,10 +1,8 @@
 # app.py
 import os
 import re
-import json
-import html
 from typing import Optional, Dict
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 # --- Make HTTPS robust on Windows/local: use certifi CA bundle ---
 try:
@@ -19,6 +17,13 @@ import pandas as pd
 import streamlit as st
 
 from app_pages.home import HomeHandlers
+from data.maxpreps import (
+    MAXPREPS_D2_URL,
+    MAXPREPS_RANKINGS_URL,
+    MAXPREPS_SCHEDULE_URL,
+    parse_maxpreps_division_rank,
+    parse_maxpreps_next_opponent,
+)
 from data.metrics import calculate_shot_on_target_percentages
 import requests
 from dotenv import load_dotenv
@@ -228,13 +233,6 @@ def require_app_password():
 
 require_app_password()
 
-# External sources: SBLive schedule + SBLive rankings
-SBLIVE_BASE = "https://www.si.com/high-school/stats/vermont"
-SBLIVE_TEAM_SLUG = "397925-milton-yellowjackets"
-SBLIVE_SCHEDULE_URL = f"{SBLIVE_BASE}/soccer/teams/{SBLIVE_TEAM_SLUG}/games"
-SBLIVE_RANKINGS_URL = "https://www.si.com/high-school/stats/vermont/28806-division-2/soccer/rankings?formula=DIVISION_POINT_INDEX"
-TEAM_NAME_CANON = "Milton"
-
 # ---------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------
@@ -370,46 +368,6 @@ def fetch_html(url: str) -> str:
     r.raise_for_status()
     return r.text
 
-def _parse_ranks_from_sblive(html: str) -> Dict[str, int]:
-    try:
-        m = re.search(r'data-react-props="(.*?)"', html, flags=re.S)
-        if not m:
-            return {}
-        props = json.loads(html.unescape(m.group(1)))
-        ranking = props.get("query", {}).get("ranking", {})
-        team_rankings = ranking.get("teamRankings") or {}
-        if isinstance(team_rankings, dict):
-            nodes = team_rankings.get("nodes") or []
-        elif isinstance(team_rankings, list):
-            nodes = team_rankings
-        else:
-            nodes = []
-        ranks: Dict[str, int] = {}
-        for entry in nodes:
-            if not isinstance(entry, dict):
-                continue
-            team = entry.get("team") or {}
-            name = str(team.get("name", "")).strip()
-            if not name:
-                continue
-            rank_value = (
-                entry.get("filteredPlace")
-                or entry.get("place")
-                or entry.get("rank")
-                or entry.get("overallStandingPlacement")
-            )
-            try:
-                rank_int = int(rank_value)
-            except (TypeError, ValueError):
-                continue
-            if rank_int <= 0 or name in ranks:
-                continue
-            ranks[name] = rank_int
-        return ranks
-    except Exception:
-        return {}
-
-
 def _clean_text(html: str) -> str:
     text = re.sub(r"<script.*?</script>", " ", html, flags=re.S)
     text = re.sub(r"<style.*?</style>", " ", text, flags=re.S)
@@ -417,36 +375,6 @@ def _clean_text(html: str) -> str:
     text = re.sub(r"&nbsp;|&amp;|&mdash;|&#\d+;", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
-
-def parse_all_ranks_from_si(html: str) -> Dict[str, int]:
-    if not html:
-        return {}
-    ranks = _parse_ranks_from_sblive(html)
-    if ranks:
-        return ranks
-    text_clean = _clean_text(html)
-    pairs = re.findall(r"\b(\d{1,2})\s+([A-Z][A-Za-z0-9.\-\' ]{2,})", text_clean)
-    ranks_fallback: Dict[str, int] = {}
-    for num, name in pairs:
-        try:
-            rank = int(num)
-        except Exception:
-            continue
-        name = name.strip()
-        if rank <= 0 or name in ranks_fallback:
-            continue
-        ranks_fallback[name] = rank
-    return ranks_fallback
-
-def fuzzy_find_rank(ranks: Dict[str,int], target: str) -> Optional[int]:
-    t = target.lower().strip()
-    best = None
-    for name, r in ranks.items():
-        n = name.lower()
-        if t == n or t in n or n in t:
-            if best is None or r < best:
-                best = r
-    return best
 
 # ---------------------------------------------------------------------
 # AGGREGATIONS / STATS
@@ -796,7 +724,7 @@ def generate_ai_team_analysis(query: str,
 def get_next_opponent_from_schedule() -> Optional[Dict[str, str]]:
     """Return next opponent using the Google Sheet schedule when possible.
 
-    Falls back to SB Live scraping only if the sheet is unavailable.
+    Falls back to MaxPreps scraping only if the sheet is unavailable.
     """
     # 1) Prefer local sheet data loaded into `matches`
     try:
@@ -818,19 +746,10 @@ def get_next_opponent_from_schedule() -> Optional[Dict[str, str]]:
     except Exception:
         pass
 
-    # 2) Fallback to SB Live simple parse
+    # 2) Fallback to MaxPreps' structured schedule data.
     try:
-        html = fetch_html(SBLIVE_SCHEDULE_URL)
-        text = _clean_text(html)
-        lines = text.split('\n')
-        for line in lines:
-            if 'milton' in line.lower() and any(month in line.lower() for month in ['oct', 'nov', 'dec', 'jan', 'feb', 'mar', 'apr', 'may']):
-                parts = line.split()
-                for i, part in enumerate(parts):
-                    if 'milton' in part.lower() and i < len(parts) - 1:
-                        opponent = parts[i + 1] if i + 1 < len(parts) else "Unknown"
-                        return {"opponent": opponent, "date": "Upcoming", "source": "SB Live"}
-        return None
+        html = fetch_html(MAXPREPS_SCHEDULE_URL)
+        return parse_maxpreps_next_opponent(html)
     except Exception:
         return None
 
@@ -872,29 +791,30 @@ def _extract_links_with_text(html: str) -> list[tuple[str,str]]:
         pass
     return pairs
 
-def find_opponent_slug_from_our_schedule(opponent_name: str) -> Optional[str]:
-    """Try to find the SI team slug for an opponent by scanning our SI schedule page for a link to that team."""
+def find_opponent_schedule_url(opponent_name: str) -> Optional[str]:
+    """Find an opponent's MaxPreps schedule URL from Milton's schedule page."""
     try:
-        html = fetch_html(SBLIVE_SCHEDULE_URL)
+        html = fetch_html(MAXPREPS_SCHEDULE_URL)
         links = _extract_links_with_text(html)
         target = opponent_name.lower().strip()
         for href, text in links:
-            if target in text.lower() and "/soccer/teams/" in href and href.endswith("/games"):
-                # href may be absolute or relative; take the slug portion
-                m = re.search(r"/soccer/teams/([^/]+)/games", href)
-                if m:
-                    return m.group(1)
+            if target in text.lower() and "/soccer/" in href:
+                team_url = urljoin(MAXPREPS_SCHEDULE_URL, href).split("?")[0]
+                if "/match/" in team_url:
+                    continue
+                if not team_url.endswith("/"):
+                    team_url += "/"
+                return team_url if team_url.endswith("/schedule/") else team_url + "schedule/"
     except Exception:
         return None
     return None
 
-def scrape_team_schedule_stats(team_slug: str) -> Optional[Dict[str, any]]:
-    """Fetch an SI team schedule page and derive rough W-L-D, GF, GA and list of opponents.
+def scrape_team_schedule_stats(schedule_url: str) -> Optional[Dict[str, any]]:
+    """Fetch a MaxPreps team schedule and derive rough W-L-D, GF, GA and opponents.
     This is a best-effort text parse; if it fails, returns None.
     """
     try:
-        url = f"{SBLIVE_BASE}/soccer/teams/{team_slug}/games"
-        html = fetch_html(url)
+        html = fetch_html(schedule_url)
         text = _clean_text(html)
 
         # Attempt to extract per-game lines containing a score like "2 - 1" and an opponent name
@@ -1016,8 +936,8 @@ def generate_ai_opponent_analysis(opponent_name: str,
         prediction = predict_vs_opponent(matches, opponent_name)
 
         # Try to enrich with scraped opponent season and common-opponent stats
-        opponent_slug = find_opponent_slug_from_our_schedule(opponent_name)
-        opponent_stats = scrape_team_schedule_stats(opponent_slug) if opponent_slug else None
+        opponent_schedule_url = find_opponent_schedule_url(opponent_name)
+        opponent_stats = scrape_team_schedule_stats(opponent_schedule_url) if opponent_schedule_url else None
         common_vs = summarize_vs_common_opponents(opponent_stats, matches) if opponent_stats else {}
         
         # Get next opponent info
@@ -1744,8 +1664,8 @@ compact, div_only, selected_season = render_sidebar(
     season_options=season_options,
     season_labels=season_labels,
     default_season=default_season,
-    schedule_url=SBLIVE_SCHEDULE_URL,
-    rankings_url=SBLIVE_RANKINGS_URL,
+    schedule_url=MAXPREPS_SCHEDULE_URL,
+    rankings_url=MAXPREPS_D2_URL,
 )
 
 # Scope every table before applying match filters so IDs can safely repeat by season.
@@ -1788,9 +1708,8 @@ match_id = get_match_id(qp)
 our_rank = None
 if season_is_active(season_catalog, selected_season):
     try:
-        si_html_rank = fetch_html(SBLIVE_RANKINGS_URL)
-        ranks = parse_all_ranks_from_si(si_html_rank)
-        our_rank = fuzzy_find_rank(ranks, TEAM_NAME_CANON)
+        rankings_html = fetch_html(MAXPREPS_RANKINGS_URL)
+        our_rank = parse_maxpreps_division_rank(rankings_html)
     except Exception:
         our_rank = None
 

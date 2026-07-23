@@ -92,6 +92,13 @@ For shot accuracy KPIs, the `matches` worksheet uses `shots` (aliased to `shots_
 
 A snapshot of the expected schema lives in `docs/SHEET_SCHEMA_SNAPSHOT.md`.
 
+## MaxPreps schedule and rankings
+
+The sidebar links to Milton's current MaxPreps schedule and the Vermont Division II hub. The app uses MaxPreps' structured schedule data as a fallback when the Google Sheet has no upcoming match, and shows the published Division II rank when MaxPreps makes the season rankings available. Until then, the rank is displayed as `N/A`.
+
+- Schedule: <https://www.maxpreps.com/vt/milton/milton-yellowjackets/soccer/schedule/>
+- Division II: <https://www.maxpreps.com/vt/soccer/26-27/division/division-ii/?statedivisionid=b872c7a0-0488-4524-bdf7-2806555e2942>
+
 ## Recording links
 
 The game detail view will show a “Game Recording” link when a URL is present. Supported column names include:
