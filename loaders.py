@@ -51,7 +51,15 @@ def load_matches(spreadsheet_key: str) -> pd.DataFrame:
         df["home_away"] = (
             df["home_away"].astype(str).str.strip().str.lower().map({"h": "H", "home": "H", "a": "A", "away": "A"})
         )
-    for c in ["goals_for", "goals_against", "shots_for", "shots_against", "saves"]:
+    for c in [
+        "goals_for",
+        "goals_against",
+        "shots_for",
+        "shots_target",
+        "shots_against",
+        "shots_against_target",
+        "saves",
+    ]:
         if c in df:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
     if {"goals_for", "goals_against"}.issubset(df):

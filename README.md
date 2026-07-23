@@ -88,6 +88,8 @@ Your spreadsheet should contain these worksheets:
 
 Add `season_id` to matches, events, plays, goals allowed, and summaries. Match IDs may restart at `0` each season because the app resolves them together with `season_id`. The active season displays only current players; historical seasons retain graduated players so old records continue to resolve correctly.
 
+For shot accuracy KPIs, the `matches` worksheet uses `shots` (aliased to `shots_for` by the app), `shots_target`, `shots_against`, and `shots_against_target`. The dashboard calculates `SOT% (For)` as `shots_target / shots` and `SOT% (Agst)` as `shots_against_target / shots_against`.
+
 A snapshot of the expected schema lives in `docs/SHEET_SCHEMA_SNAPSHOT.md`.
 
 ## Recording links

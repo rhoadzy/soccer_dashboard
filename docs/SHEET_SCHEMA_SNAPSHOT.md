@@ -22,7 +22,9 @@ Columns:
 - goals_for
 - goals_against
 - shots
+- shots_target
 - shots_against
+- shots_against_target
 - saves
 - url
 

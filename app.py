@@ -19,6 +19,7 @@ import pandas as pd
 import streamlit as st
 
 from app_pages.home import HomeHandlers
+from data.metrics import calculate_shot_on_target_percentages
 import requests
 from dotenv import load_dotenv
 
@@ -1168,6 +1169,7 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
 
     save_denom = sv + ga
     save_pct = (sv / save_denom * 100.0) if save_denom > 0 else 0.0
+    shots_target_pct, shots_against_target_pct = calculate_shot_on_target_percentages(matches_view)
     conv_for_pct = (gf / sh_for * 100.0) if sh_for > 0 else 0.0
     conv_agn_pct = (ga / sh_ag  * 100.0) if sh_ag  > 0 else 0.0
     record_str = _team_record_text(matches_view)
@@ -1180,7 +1182,9 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
             ("GF", gf),
             ("GA", ga),
             ("Shots (For)", sh_for),
+            ("SOT% (For)", f"{shots_target_pct:.1f}%"),
             ("Shots (Agst)", sh_ag),
+            ("SOT% (Agst)", f"{shots_against_target_pct:.1f}%"),
             ("Saves", sv),
             ("Save%", f"{save_pct:.1f}%"),
             ("Conv% (For)", f"{conv_for_pct:.1f}%"),
@@ -1196,22 +1200,27 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
         st.markdown(html, unsafe_allow_html=True)
         return
 
-    # ---------- Desktop: keep classic metrics row ----------
-    cols = st.columns(11)
-    cols[0].metric("Games", games)
-    cols[1].metric("GF", gf)
-    cols[2].metric("GA", ga)
-    cols[3].metric("Shots (For)", sh_for)
-    cols[4].metric("Shots (Agst)", sh_ag)
-    cols[5].metric("Saves", sv)
-    cols[6].metric("Save%", f"{save_pct:.1f}%")
-    cols[7].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
-    cols[8].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
-    cols[9].metric("Record", record_str)
+    # ---------- Desktop: separate volume from efficiency for legibility ----------
+    volume_cols = st.columns(7)
+    volume_cols[0].metric("Games", games)
+    volume_cols[1].metric("Record", record_str)
+    volume_cols[2].metric("GF", gf)
+    volume_cols[3].metric("GA", ga)
+    volume_cols[4].metric("Shots (For)", sh_for)
+    volume_cols[5].metric("Shots (Agst)", sh_ag)
     if d2_rank:
-        cols[10].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
+        volume_cols[6].metric("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}")
     else:
-        cols[10].metric("D2 Rank", "N/A")
+        volume_cols[6].metric("D2 Rank", "N/A")
+
+    efficiency_cols = st.columns(6)
+    efficiency_cols[0].metric("SOT% (For)", f"{shots_target_pct:.1f}%")
+    efficiency_cols[1].metric("SOT% (Agst)", f"{shots_against_target_pct:.1f}%")
+    efficiency_cols[2].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
+    efficiency_cols[3].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
+    efficiency_cols[4].metric("Saves", sv)
+    efficiency_cols[5].metric("Save%", f"{save_pct:.1f}%")
+    if not d2_rank:
         st.caption("Rank unavailable or not fetched. Click 'Open Rankings (D2)' in the sidebar.")
 
 def render_games_table(matches: pd.DataFrame, compact: bool=False):
