@@ -68,12 +68,13 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 4. **Set up Google Sheets**
 
    Your Google Sheet should have these tabs:
+   - **seasons**: Season labels and the active-season flag
    - **matches**: Game results and statistics (include optional 'url' column for game recordings)
-   - **players**: Team roster information
+   - **players**: Team roster information with stable player IDs and current/graduated status
    - **events**: Individual player performance
    - **plays**: Set-piece attempts and results
    - **goals_allowed**: Defensive statistics
-   - **summaries**: Coach notes and game summaries
+   - **summary** (or **summaries**): Coach notes and game summaries
 
 5. **Run the application**
    ```bash
@@ -82,10 +83,20 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 
 ## 📋 Data Structure
 
+### Seasons Tab
+| Column | Type | Description |
+|--------|------|-------------|
+| season_id | string | Stable season identifier, such as `2026` |
+| label | string | Display label, such as `2026 season` |
+| active | boolean | `TRUE` for the season selected by default |
+
+The sidebar season selector scopes matches, events, plays, goals allowed, and summaries. Add `season_id` to each of those tabs. Match IDs may restart at `0` each season because the app resolves them together with `season_id`.
+
 ### Matches Tab
 | Column | Type | Description |
 |--------|------|-------------|
-| match_id | string | Unique game identifier |
+| match_id | string | Game identifier, unique within a season |
+| season_id | string | Season this game belongs to |
 | date | date | Game date |
 | opponent | string | Opposing team |
 | home_away | string | H/A for home/away |
@@ -98,10 +109,22 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 | division_game | boolean | Division game flag |
 | url | string | Game recording URL (optional) |
 
+### Players Tab
+| Column | Type | Description |
+|--------|------|-------------|
+| player_id | string | Permanent player identifier; keep it unchanged for returning players |
+| player_status | string | `current` or `graduated` |
+| name | string | Player name |
+| position | string | Player position |
+| jersey | integer | Jersey number |
+
+The active season shows `current` players. Historical seasons retain both current and graduated players so old match records still resolve correctly.
+
 ### Plays Tab (Set-Pieces)
 | Column | Type | Description |
 |--------|------|-------------|
 | match_id | string | Game identifier |
+| season_id | string | Season this play belongs to |
 | set_piece | string | Type (corner, penalty, fk_direct, fk_indirect) |
 | play_call_id | string | Play name/identifier |
 | taker_id | string | Player taking the set-piece |
@@ -112,6 +135,7 @@ A comprehensive analytics dashboard for high school soccer teams, built with Str
 | Column | Type | Description |
 |--------|------|-------------|
 | match_id | string | Game identifier |
+| season_id | string | Season this goal belongs to |
 | goal_id | string | Unique goal identifier |
 | minute | integer | Minute of goal |
 | situation | string | Goal situation (set piece, open play, etc.) |

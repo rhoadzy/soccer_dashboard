@@ -4,6 +4,7 @@ import re
 import json
 import html
 from typing import Optional, Dict
+from urllib.parse import urlencode
 
 # --- Make HTTPS robust on Windows/local: use certifi CA bundle ---
 try:
@@ -23,6 +24,7 @@ from dotenv import load_dotenv
 
 # Centralized cached data loaders
 from loaders import (
+    load_seasons,
     load_matches,
     load_players,
     load_events,
@@ -1240,9 +1242,11 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
             ha_html   = _ha_pill(r.get("home_away",""))
             div_html  = _div_pill(r.get("division_game", False))
             mid = str(r.get("match_id","") or f"row{idx}")
+            season_id = str(r.get("season_id", "")).strip()
+            game_url = "?" + urlencode({"season": season_id, "match_id": mid})
 
             card = f"""
-            <a href='?match_id={mid}' style='text-decoration:none; color:inherit;'>
+            <a href='{game_url}' style='text-decoration:none; color:inherit;'>
               <div class="game-card">
                 <div class="gc-row">
                   <div>
@@ -1270,17 +1274,19 @@ def render_games_table(matches: pd.DataFrame, compact: bool=False):
         cols[1].write(_format_date(r.get("date","")))
         cols[2].write(r.get("match_id",""))
         mid = str(r.get("match_id","") or f"row{idx}")
-        cols[3].markdown(f"<a href='?match_id={mid}' style='text-decoration:none'>{_color_opp(r.get('opponent',''), r.get('result',''))}</a>", unsafe_allow_html=True)
+        season_id = str(r.get("season_id", "")).strip()
+        game_url = "?" + urlencode({"season": season_id, "match_id": mid})
+        cols[3].markdown(f"<a href='{game_url}' style='text-decoration:none'>{_color_opp(r.get('opponent',''), r.get('result',''))}</a>", unsafe_allow_html=True)
         cols[4].write(r.get("home_away",""))
         cols[5].write("Yes" if r.get("division_game", False) else "No")
         cols[6].write(r.get("GF-GA",""))
         cols[7].write(r.get("shots_for", r.get("shots","")))
         cols[8].write(r.get("saves",""))
-        cols[9].markdown(f"<a class='tiny-open' href='?match_id={mid}' title='Open game'>Open</a>", unsafe_allow_html=True)
+        cols[9].markdown(f"<a class='tiny-open' href='{game_url}' title='Open game'>Open</a>", unsafe_allow_html=True)
 
     # CSV download of games
     try:
-        export_cols = [c for c in ["date","match_id","opponent","home_away","division_game","GF-GA","shots_for","saves"] if c in view.columns]
+        export_cols = [c for c in ["season_id","date","match_id","opponent","home_away","division_game","GF-GA","shots_for","saves"] if c in view.columns]
         csv = view[export_cols].to_csv(index=False).encode('utf-8')
         st.download_button("Download games (CSV)", data=csv, file_name="games.csv", mime="text/csv")
     except Exception:
@@ -1413,7 +1419,13 @@ def _set_piece_aggregate(df: pd.DataFrame, include_penalties: bool = True) -> tu
     goals = int(gc[mask].sum()) if total > 0 else 0
     return total, goals
 
-def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.DataFrame, players: pd.DataFrame):
+def render_set_piece_analysis_from_plays(
+    plays_df: pd.DataFrame,
+    matches: pd.DataFrame,
+    players: pd.DataFrame,
+    *,
+    season_plays_df: pd.DataFrame,
+):
     st.subheader("Set-Piece Analysis")
 
     # ---- Guard + normalize ----
@@ -1434,7 +1446,7 @@ def render_set_piece_analysis_from_plays(plays_df: pd.DataFrame, matches: pd.Dat
 
     # ---- KPI tiles (mobile-friendly card grid) ----
     # Show values for current filters (df) and season totals for clarity
-    season_df = load_plays_simple(SPREADSHEET_KEY)
+    season_df = season_plays_df.copy()
     season_df.columns = [c.strip().lower() for c in season_df.columns]
     if "set_piece" not in season_df.columns:
         season_df["set_piece"] = ""
@@ -1689,26 +1701,55 @@ def render_goals_allowed_analysis(ga_df: pd.DataFrame,
 # ---------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------
-matches = load_matches(SPREADSHEET_KEY)
-players = load_players(SPREADSHEET_KEY)
-events = load_events(SPREADSHEET_KEY)
-plays_simple = load_plays_simple(SPREADSHEET_KEY)
-summaries = load_summaries(SPREADSHEET_KEY)
-goals_allowed = load_goals_allowed(SPREADSHEET_KEY)
+all_seasons = load_seasons(SPREADSHEET_KEY)
+all_matches = load_matches(SPREADSHEET_KEY)
+all_players = load_players(SPREADSHEET_KEY)
+all_events = load_events(SPREADSHEET_KEY)
+all_plays_simple = load_plays_simple(SPREADSHEET_KEY)
+all_summaries = load_summaries(SPREADSHEET_KEY)
+all_goals_allowed = load_goals_allowed(SPREADSHEET_KEY)
 
-from data.views import apply_match_filters, derive_related_views, get_match_id
+from data.seasons import build_season_catalog, resolve_season_id, season_is_active, season_label
+from data.views import (
+    apply_match_filters,
+    derive_related_views,
+    filter_by_season,
+    filter_players_for_season,
+    get_match_id,
+)
 from ui.sidebar import render_sidebar
 
+season_catalog = build_season_catalog(all_seasons, all_matches)
+season_options = season_catalog["season_id"].astype(str).tolist()
+season_labels = dict(zip(season_options, season_catalog["label"].astype(str)))
+active_season_id = resolve_season_id(None, season_catalog)
+requested_season = _qparams_get().get("season")
+default_season = resolve_season_id(requested_season, season_catalog)
 
 # Sidebar (clean labels)
-compact, div_only = render_sidebar(
+compact, div_only, selected_season = render_sidebar(
     qparams_get=_qparams_get,
     qp_bool=_qp_bool,
     qparams_set=_qparams_set,
     qparams_merge_update=_qparams_merge_update,
+    season_options=season_options,
+    season_labels=season_labels,
+    default_season=default_season,
     schedule_url=SBLIVE_SCHEDULE_URL,
     rankings_url=SBLIVE_RANKINGS_URL,
 )
+
+# Scope every table before applying match filters so IDs can safely repeat by season.
+matches = filter_by_season(all_matches, selected_season)
+players = filter_players_for_season(
+    all_players,
+    selected_season,
+    active_season_id=active_season_id,
+)
+events = filter_by_season(all_events, selected_season)
+plays_simple = filter_by_season(all_plays_simple, selected_season)
+summaries = filter_by_season(all_summaries, selected_season)
+goals_allowed = filter_by_season(all_goals_allowed, selected_season)
 
 # Apply filters (division/date/opponent/H-A)
 qp = _qparams_get()
@@ -1736,12 +1777,13 @@ match_id = get_match_id(qp)
 
 # D2 rank (KPI only)
 our_rank = None
-try:
-    si_html_rank = fetch_html(SBLIVE_RANKINGS_URL)
-    ranks = parse_all_ranks_from_si(si_html_rank)
-    our_rank = fuzzy_find_rank(ranks, TEAM_NAME_CANON)
-except Exception:
-    our_rank = None
+if season_is_active(season_catalog, selected_season):
+    try:
+        si_html_rank = fetch_html(SBLIVE_RANKINGS_URL)
+        ranks = parse_all_ranks_from_si(si_html_rank)
+        our_rank = fuzzy_find_rank(ranks, TEAM_NAME_CANON)
+    except Exception:
+        our_rank = None
 
 from app_context import AppContext
 from router import route
@@ -1750,6 +1792,9 @@ from router import route
 ctx = AppContext(
     compact=compact,
     div_only=div_only,
+    season_id=selected_season,
+    season_label=season_label(season_catalog, selected_season),
+    season_is_active=season_is_active(season_catalog, selected_season),
     matches=matches,
     players=players,
     events=events,

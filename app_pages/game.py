@@ -8,6 +8,8 @@ All app-local helpers (query param reset, AI helpers, formatting) are injected.
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 import pandas as pd
 import streamlit as st
 
@@ -51,6 +53,7 @@ def render_coach_notes_and_summary(
 
 def render_game_drilldown(
     *,
+    season_id: str,
     match_id: str,
     matches: pd.DataFrame,
     players: pd.DataFrame,
@@ -67,7 +70,7 @@ def render_game_drilldown(
     if row.empty:
         st.error("Match not found.")
         if st.button("Back to Dashboard"):
-            qparams_set()
+            qparams_set(season=season_id)
             st.rerun()
         return
 
@@ -158,6 +161,7 @@ def render_game_drilldown(
     st.divider()
     c1, c2 = st.columns([1, 1])
     if c1.button("Back to Dashboard"):
-        qparams_set()
+        qparams_set(season=season_id)
         st.rerun()
-    c2.markdown(f"[Open this game in a new tab](?match_id={match_id})")
+    game_url = "?" + urlencode({"season": season_id, "match_id": match_id})
+    c2.markdown(f"[Open this game in a new tab]({game_url})")

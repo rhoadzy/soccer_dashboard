@@ -23,6 +23,22 @@ def _strip_and_alias_matches(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _normalize_season_id(df: pd.DataFrame) -> pd.DataFrame:
+    if "season_id" in df.columns:
+        df["season_id"] = df["season_id"].astype(str).str.strip()
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_seasons(spreadsheet_key: str) -> pd.DataFrame:
+    try:
+        df = read_sheet_to_df(spreadsheet_key, "seasons")
+    except Exception:
+        return pd.DataFrame(columns=["season_id", "label", "active"])
+    df.columns = [str(column).strip().lower() for column in df.columns]
+    return _normalize_season_id(df)
+
+
 @st.cache_data(ttl=300)
 def load_matches(spreadsheet_key: str) -> pd.DataFrame:
     df = read_sheet_to_df(spreadsheet_key, "matches")
@@ -46,17 +62,20 @@ def load_matches(spreadsheet_key: str) -> pd.DataFrame:
         df["match_id"] = df.index.astype(str)
     else:
         df["match_id"] = df["match_id"].astype(str)
-    return df
+    return _normalize_season_id(df)
 
 
 @st.cache_data(ttl=300)
 def load_players(spreadsheet_key: str) -> pd.DataFrame:
     df = read_sheet_to_df(spreadsheet_key, "players")
+    df.columns = [str(column).strip().lower() for column in df.columns]
     if "jersey" in df:
         df["jersey"] = pd.to_numeric(df["jersey"], errors="coerce").fillna(0).astype(int)
     if "player_id" in df:
         df["player_id"] = df["player_id"].astype(str)
-    return df
+    if "player_status" in df:
+        df["player_status"] = df["player_status"].astype(str).str.strip().str.lower()
+    return _normalize_season_id(df)
 
 
 @st.cache_data(ttl=300)
@@ -72,7 +91,7 @@ def load_events(spreadsheet_key: str) -> pd.DataFrame:
         if n not in df.columns:
             df[n] = 0
         df[n] = pd.to_numeric(df[n], errors="coerce").fillna(0).astype(int)
-    return df
+    return _normalize_season_id(df)
 
 
 @st.cache_data(ttl=300)
@@ -102,8 +121,12 @@ def load_plays_simple(spreadsheet_key: str) -> pd.DataFrame:
     for k in ["match_id", "play_call_id", "play_type"]:
         if k in raw:
             raw[k] = raw[k].astype(str).fillna("").str.strip()
-    keep = [c for c in ["match_id", "set_piece", "play_call_id", "play_type", "taker_notes", "goal_created"] if c in raw]
-    return raw[keep]
+    keep = [
+        c
+        for c in ["season_id", "match_id", "set_piece", "play_call_id", "play_type", "taker_notes", "goal_created"]
+        if c in raw
+    ]
+    return _normalize_season_id(raw[keep].copy())
 
 
 @st.cache_data(ttl=300)
@@ -115,7 +138,7 @@ def load_summaries(spreadsheet_key: str) -> pd.DataFrame:
             df.columns = [str(c).strip().lower() for c in df.columns]
             if "match_id" in df.columns:
                 df["match_id"] = df["match_id"].astype(str)
-            return df
+            return _normalize_season_id(df)
         except Exception:
             continue
     return pd.DataFrame()
@@ -162,4 +185,4 @@ def load_goals_allowed(spreadsheet_key: str) -> pd.DataFrame:
     if "description" not in df.columns:
         df["description"] = ""
 
-    return df
+    return _normalize_season_id(df)

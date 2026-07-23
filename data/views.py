@@ -4,6 +4,43 @@ from typing import Optional
 
 import pandas as pd
 
+from data.seasons import LEGACY_SEASON_ID
+
+
+def filter_by_season(
+    dataframe: pd.DataFrame,
+    season_id: str,
+    *,
+    legacy_season_id: str = LEGACY_SEASON_ID,
+) -> pd.DataFrame:
+    """Return rows for one season without leaking legacy data into new seasons."""
+
+    if dataframe is None or dataframe.empty:
+        return dataframe.copy() if dataframe is not None else pd.DataFrame()
+    if "season_id" not in dataframe.columns:
+        return dataframe.copy() if str(season_id) == legacy_season_id else dataframe.iloc[0:0].copy()
+
+    values = dataframe["season_id"].astype(str).str.strip()
+    return dataframe.loc[values == str(season_id)].copy()
+
+
+def filter_players_for_season(
+    players: pd.DataFrame,
+    season_id: str,
+    *,
+    active_season_id: str,
+) -> pd.DataFrame:
+    """Select the roster for a season using the available sheet model."""
+
+    if players is None or players.empty:
+        return players.copy() if players is not None else pd.DataFrame()
+    if "season_id" in players.columns:
+        return filter_by_season(players, season_id)
+    if str(season_id) == str(active_season_id) and "player_status" in players.columns:
+        statuses = players["player_status"].astype(str).str.strip().str.lower()
+        return players.loc[statuses == "current"].copy()
+    return players.copy()
+
 
 def apply_match_filters(
     matches: pd.DataFrame,
@@ -56,7 +93,9 @@ def derive_related_views(
             else goals_allowed
         )
     else:
-        events_view, plays_view, ga_view = events, plays_simple, goals_allowed
+        events_view = events.iloc[0:0].copy()
+        plays_view = plays_simple.iloc[0:0].copy()
+        ga_view = goals_allowed.iloc[0:0].copy()
 
     return events_view, plays_view, ga_view
 

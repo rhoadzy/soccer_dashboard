@@ -11,6 +11,9 @@ class AppContext:
     # Flags / UI
     compact: bool
     div_only: bool
+    season_id: str
+    season_label: str
+    season_is_active: bool
 
     # Raw tables
     matches: pd.DataFrame

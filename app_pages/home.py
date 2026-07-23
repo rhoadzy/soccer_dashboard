@@ -128,6 +128,7 @@ def render_home(
             ),
             "Set Pieces": lambda: render_home_tab_set_pieces(
                 plays_view,
+                plays_simple,
                 matches_view,
                 players,
                 render_set_piece_analysis_from_plays=handlers.render_set_piece_analysis_from_plays,

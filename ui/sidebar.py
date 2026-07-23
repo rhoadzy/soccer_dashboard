@@ -7,13 +7,16 @@ def render_sidebar(
     qp_bool,
     qparams_set,
     qparams_merge_update,
+    season_options: list[str],
+    season_labels: dict[str, str],
+    default_season: str,
     schedule_url: str,
     rankings_url: str,
-) -> tuple[bool, bool]:
+) -> tuple[bool, bool, str]:
     """Render sidebar and keep query params in sync.
 
     Returns:
-        (compact, div_only)
+        (compact, div_only, selected_season)
 
     Note: Other filters (opp/ha) are stored in query params; the main app can
     re-read them from qparams_get() to preserve current behavior.
@@ -26,6 +29,15 @@ def render_sidebar(
             st.rerun()
 
         qp_init = qparams_get()
+        requested_season = str(qp_init.get("season", default_season))
+        selected_season = requested_season if requested_season in season_options else default_season
+        selected_season = st.selectbox(
+            "Season",
+            season_options,
+            index=season_options.index(selected_season),
+            format_func=lambda value: season_labels.get(value, f"{value} season"),
+        )
+
         COMPACT_DEFAULT = True
         compact_init = qp_bool(qp_init.get("compact"), COMPACT_DEFAULT)
         div_only_init = qp_bool(qp_init.get("div_only"), False)
@@ -47,6 +59,7 @@ def render_sidebar(
         # Sync toggles/filters to query params only when they differ
         try:
             desired = {
+                "season": selected_season,
                 "compact": str(compact).lower(),
                 "div_only": str(div_only).lower(),
                 "opp": opponent_q.strip(),
@@ -68,4 +81,4 @@ def render_sidebar(
         except Exception:
             pass
 
-    return compact, div_only
+    return compact, div_only, selected_season

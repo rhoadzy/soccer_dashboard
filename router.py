@@ -12,6 +12,7 @@ def route(*, ctx, handlers: HomeHandlers) -> None:
 
     if ctx.match_id:
         render_game_drilldown(
+            season_id=ctx.season_id,
             match_id=ctx.match_id,
             matches=ctx.matches_view,
             players=ctx.players,
@@ -27,7 +28,7 @@ def route(*, ctx, handlers: HomeHandlers) -> None:
         return
 
     render_home(
-        title="Milton Varsity Boys Soccer Team 2025",
+        title=f"Milton Varsity Boys Soccer Team {ctx.season_id}",
         matches=ctx.matches,
         players=ctx.players,
         events=ctx.events,

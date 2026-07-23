@@ -4,9 +4,16 @@ Source sheet: https://docs.google.com/spreadsheets/d/1gRgooEJzb6ibKPSGnq3HAxOC6W
 
 ## Worksheets
 
+### seasons (2 rows)
+Columns:
+- season_id
+- label
+- active
+
 ### matches (18 rows)
 Columns:
 - match_id
+- season_id
 - date
 - opponent
 - home_away
@@ -22,6 +29,7 @@ Columns:
 ### players (20 rows)
 Columns:
 - player_id
+- player_status
 - name
 - position
 - jersey
@@ -29,6 +37,7 @@ Columns:
 ### events (175 rows)
 Columns:
 - event_id
+- season_id
 - match_id
 - player_id
 - goals
@@ -39,6 +48,7 @@ Columns:
 ### plays (188 rows)
 Columns:
 - match_id
+- season_id
 - set_piece
 - play_call_id
 - taker_id
@@ -48,6 +58,7 @@ Columns:
 ### goals_allowed (24 rows)
 Columns:
 - match_id
+- season_id
 - goal_id
 - description
 - goalie_player_id
@@ -57,6 +68,7 @@ Columns:
 ### summary (18 rows)
 Columns:
 - match_id
+- season_id
 - opp_formation
 - our_formation
 - opp_style_notes
