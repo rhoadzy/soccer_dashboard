@@ -25,6 +25,7 @@ from data.maxpreps import (
     parse_maxpreps_next_opponent,
 )
 from data.metrics import calculate_shot_on_target_percentages
+from data.seasons import supports_shot_on_target_kpis
 import requests
 from dotenv import load_dotenv
 
@@ -1293,7 +1294,12 @@ def generate_ai_set_piece_summary(plays_df: pd.DataFrame,
 # ---------------------------------------------------------------------
 # UI RENDERERS
 # ---------------------------------------------------------------------
-def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact: bool=False):
+def _team_kpis(
+    matches_view: pd.DataFrame,
+    d2_rank: Optional[int] = None,
+    compact: bool = False,
+    season_id: str = "",
+):
     # --- aggregate
     gf = int(matches_view.get("goals_for", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
     ga = int(matches_view.get("goals_against", pd.Series(dtype=int)).sum()) if not matches_view.empty else 0
@@ -1304,6 +1310,7 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
 
     save_denom = sv + ga
     save_pct = (sv / save_denom * 100.0) if save_denom > 0 else 0.0
+    show_shot_on_target_kpis = supports_shot_on_target_kpis(season_id)
     shots_target_pct, shots_against_target_pct = calculate_shot_on_target_percentages(matches_view)
     conv_for_pct = (gf / sh_for * 100.0) if sh_for > 0 else 0.0
     conv_agn_pct = (ga / sh_ag  * 100.0) if sh_ag  > 0 else 0.0
@@ -1317,14 +1324,17 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
             ("GF", gf),
             ("GA", ga),
             ("Shots (For)", sh_for),
-            ("SOT% (For)", f"{shots_target_pct:.1f}%"),
             ("Shots (Agst)", sh_ag),
-            ("SOT% (Agst)", f"{shots_against_target_pct:.1f}%"),
             ("Saves", sv),
             ("Save%", f"{save_pct:.1f}%"),
             ("Conv% (For)", f"{conv_for_pct:.1f}%"),
             ("Conv% (Agst)", f"{conv_agn_pct:.1f}%"),
         ]
+        if show_shot_on_target_kpis:
+            items[6:6] = [
+                ("SOT% (For)", f"{shots_target_pct:.1f}%"),
+                ("SOT% (Agst)", f"{shots_against_target_pct:.1f}%"),
+            ]
         if d2_rank:
             items.append(("D2 Rank", f"{d2_rank}{_suffix(d2_rank)}"))
 
@@ -1348,13 +1358,25 @@ def _team_kpis(matches_view: pd.DataFrame, d2_rank: Optional[int]=None, compact:
     else:
         volume_cols[6].metric("D2 Rank", "N/A")
 
-    efficiency_cols = st.columns(6)
-    efficiency_cols[0].metric("SOT% (For)", f"{shots_target_pct:.1f}%")
-    efficiency_cols[1].metric("SOT% (Agst)", f"{shots_against_target_pct:.1f}%")
-    efficiency_cols[2].metric("Conv% (For)", f"{conv_for_pct:.1f}%")
-    efficiency_cols[3].metric("Conv% (Agst)", f"{conv_agn_pct:.1f}%")
-    efficiency_cols[4].metric("Saves", sv)
-    efficiency_cols[5].metric("Save%", f"{save_pct:.1f}%")
+    efficiency_metrics = []
+    if show_shot_on_target_kpis:
+        efficiency_metrics.extend(
+            [
+                ("SOT% (For)", f"{shots_target_pct:.1f}%"),
+                ("SOT% (Agst)", f"{shots_against_target_pct:.1f}%"),
+            ]
+        )
+    efficiency_metrics.extend(
+        [
+            ("Conv% (For)", f"{conv_for_pct:.1f}%"),
+            ("Conv% (Agst)", f"{conv_agn_pct:.1f}%"),
+            ("Saves", sv),
+            ("Save%", f"{save_pct:.1f}%"),
+        ]
+    )
+    efficiency_cols = st.columns(len(efficiency_metrics))
+    for column, (label, value) in zip(efficiency_cols, efficiency_metrics):
+        column.metric(label, value)
     if not d2_rank:
         st.caption("Rank unavailable or not fetched. Click 'Open Rankings (D2)' in the sidebar.")
 

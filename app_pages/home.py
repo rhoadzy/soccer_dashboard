@@ -57,6 +57,7 @@ def render_home(
     events_view: pd.DataFrame,
     plays_view: pd.DataFrame,
     ga_view: pd.DataFrame,
+    season_id: str,
     our_rank: Optional[int],
     compact: bool,
     handlers: HomeHandlers,
@@ -88,7 +89,12 @@ def render_home(
             st.cache_data.clear()
             st.rerun()
 
-    handlers.team_kpis(matches_view, d2_rank=our_rank, compact=compact)
+    handlers.team_kpis(
+        matches_view,
+        d2_rank=our_rank,
+        compact=compact,
+        season_id=season_id,
+    )
 
     tab_labels = ["Games", "Trends", "Leaders", "Goals Allowed", "Set Pieces"]
     if "main_tab_radio" not in st.session_state:

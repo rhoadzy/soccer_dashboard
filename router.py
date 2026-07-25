@@ -39,6 +39,7 @@ def route(*, ctx, handlers: HomeHandlers) -> None:
         events_view=ctx.events_view,
         plays_view=ctx.plays_view,
         ga_view=ctx.ga_view,
+        season_id=ctx.season_id,
         our_rank=ctx.our_rank,
         compact=ctx.compact,
         handlers=handlers,

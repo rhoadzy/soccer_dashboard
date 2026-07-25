@@ -2,7 +2,13 @@ import unittest
 
 import pandas as pd
 
-from data.seasons import build_season_catalog, resolve_season_id, season_is_active, season_label
+from data.seasons import (
+    build_season_catalog,
+    resolve_season_id,
+    season_is_active,
+    season_label,
+    supports_shot_on_target_kpis,
+)
 from data.views import derive_related_views, filter_by_season, filter_players_for_season
 
 
@@ -37,6 +43,11 @@ class SeasonCatalogTests(unittest.TestCase):
         catalog = build_season_catalog(seasons, self.matches)
 
         self.assertEqual(season_label(catalog, "2026"), "2026 season")
+
+    def test_shot_on_target_kpis_start_with_2026_season(self):
+        self.assertFalse(supports_shot_on_target_kpis("2025"))
+        self.assertTrue(supports_shot_on_target_kpis("2026"))
+        self.assertTrue(supports_shot_on_target_kpis("2027"))
 
 
 class SeasonFilteringTests(unittest.TestCase):

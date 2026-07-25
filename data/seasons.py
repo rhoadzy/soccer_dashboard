@@ -4,6 +4,17 @@ import pandas as pd
 
 
 LEGACY_SEASON_ID = "2025"
+SHOT_ON_TARGET_KPI_START_SEASON = 2026
+
+
+def supports_shot_on_target_kpis(season_id: object) -> bool:
+    """Return whether shot-on-target fields are available for a season."""
+    try:
+        return int(str(season_id).strip()) >= SHOT_ON_TARGET_KPI_START_SEASON
+    except (TypeError, ValueError):
+        return False
+
+
 _TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
 
 
