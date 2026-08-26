@@ -36,7 +36,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON={...full service account json...}
 
 # Optional (AI)
 GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-120b
 
 # Optional (simple password gate)
 APP_PASSWORD=choose_a_password
@@ -69,7 +69,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = '''{ ...full json... }'''
 
 # Optional
 GROQ_API_KEY = "gsk_..."
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
 APP_PASSWORD = "..."
 ```
 
@@ -107,7 +107,7 @@ The game detail view will show a “Game Recording” link when a URL is present
 ## AI summaries (Groq)
 
 AI is used for small-data summarization (coach-friendly recaps and recommendations). Defaults:
-- Model: `llama-3.3-70b-versatile` (override via `GROQ_MODEL`)
+- Model: `openai/gpt-oss-120b` (override via `GROQ_MODEL`)
 
 If AI fails and you have `DEBUG_AI=true`, the app will show a debug hint in the UI.
 
